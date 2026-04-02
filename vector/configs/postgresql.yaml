@@ -1,0 +1,100 @@
+# Mihari Vector Configuration - PostgreSQL
+# Collects PostgreSQL logs and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_postgresql_logs:
+    type: file
+    include:
+      - "/var/log/postgresql/*.log"
+      - "/var/lib/postgresql/*/main/log/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_postgresql_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9187/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_postgresql_parser:
+    type: remap
+    inputs: [mihari_postgresql_logs]
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+      parsed, err = parse_regex(.message, r'^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \w+) \[(?P<pid>\d+)\] (?:(?P<user>\w+)@(?P<database>\w+) )?(?P<level>\w+):\s+(?P<msg>.*)')
+      if err == null {
+        .level = downcase(parsed.level ?? "info")
+        .message = parsed.msg ?? .message
+        raw = {}
+        raw.message = .message
+        raw.pid = parsed.pid
+        raw.user = parsed.user
+        raw.database = parsed.database
+        raw.level = .level
+        raw.service = "postgresql"
+        raw.host = get_hostname!()
+        .raw = encode_json(raw)
+      } else {
+        raw = {}
+        raw.message = .message
+        raw.service = "postgresql"
+        raw.host = get_hostname!()
+        .raw = encode_json(raw)
+      }
+
+  mihari_metrics_to_logs:
+    type: metric_to_log
+    inputs: [mihari_postgresql_metrics, mihari_host_metrics]
+
+  mihari_metrics_formatter:
+    type: remap
+    inputs: [mihari_metrics_to_logs]
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_postgresql_parser]
+    uri: "__INGESTION_URL__/v1/ingest/logs"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: http
+    inputs: [mihari_metrics_formatter]
+    uri: "__INGESTION_URL__/v1/ingest/metrics"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

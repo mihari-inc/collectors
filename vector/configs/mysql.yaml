@@ -1,0 +1,100 @@
+# Mihari Vector Configuration - MySQL
+# Collects MySQL error/slow query logs and host metrics
+#
+# Variables:
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_mysql_logs:
+    type: file
+    include:
+      - "/var/log/mysql/*.log"
+      - "/var/log/mysql/error.log"
+      - "/var/log/mysql/slow-query.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_mysql_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9104/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_mysql_parser:
+    type: remap
+    inputs: [mihari_mysql_logs]
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+      parsed, err = parse_regex(.message, r'^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z?) (?P<thread>\d+) \[(?P<level>\w+)\] (?:\[(?P<code>\w+)\] \[(?P<subsystem>\w+)\] )?(?P<msg>.*)')
+      if err == null {
+        .level = downcase(parsed.level ?? "info")
+        raw = {}
+        raw.message = parsed.msg ?? .message
+        raw.thread = parsed.thread
+        raw.error_code = parsed.code
+        raw.subsystem = parsed.subsystem
+        raw.level = .level
+        raw.service = "mysql"
+        raw.host = get_hostname!()
+        .raw = encode_json(raw)
+      } else {
+        raw = {}
+        raw.message = .message
+        raw.service = "mysql"
+        raw.host = get_hostname!()
+        .raw = encode_json(raw)
+      }
+
+  mihari_metrics_to_logs:
+    type: metric_to_log
+    inputs: [mihari_mysql_metrics, mihari_host_metrics]
+
+  mihari_metrics_formatter:
+    type: remap
+    inputs: [mihari_metrics_to_logs]
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_mysql_parser]
+    uri: "__INGESTION_URL__/v1/ingest/logs"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: http
+    inputs: [mihari_metrics_formatter]
+    uri: "__INGESTION_URL__/v1/ingest/metrics"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

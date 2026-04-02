@@ -1,0 +1,95 @@
+# Mihari Vector Configuration - Kubernetes
+# Auto-discovers pods and enriches with K8s metadata
+#
+# Variables:
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_kubernetes_logs:
+    type: kubernetes_logs
+    auto_partial_merge: true
+    self_node_name: "${VECTOR_SELF_NODE_NAME}"
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_kubernetes_parser:
+    type: remap
+    inputs: [mihari_kubernetes_logs]
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+      namespace = .kubernetes.pod_namespace ?? "unknown"
+      pod = .kubernetes.pod_name ?? "unknown"
+      container = .kubernetes.container_name ?? "unknown"
+      node = .kubernetes.pod_node_name ?? "unknown"
+      level = "info"
+      level_parsed, err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL|PANIC)\b')
+      if err == null {
+        level = downcase(level_parsed.level)
+      }
+      if .stream == "stderr" {
+        level = "error"
+      }
+      .level = level
+      raw = {}
+      raw.message = .message
+      raw.level = level
+      raw.service = join!([namespace, pod, container], "/")
+      raw.host = node
+      raw.k8s_namespace = namespace
+      raw.k8s_pod = pod
+      raw.k8s_container = container
+      raw.k8s_node = node
+      raw.k8s_labels = encode_json(.kubernetes.pod_labels ?? {})
+      .raw = encode_json(raw)
+
+  mihari_metrics_to_logs:
+    type: metric_to_log
+    inputs: [mihari_host_metrics]
+
+  mihari_metrics_formatter:
+    type: remap
+    inputs: [mihari_metrics_to_logs]
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_kubernetes_parser]
+    uri: "__INGESTION_URL__/v1/ingest/logs"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: http
+    inputs: [mihari_metrics_formatter]
+    uri: "__INGESTION_URL__/v1/ingest/metrics"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

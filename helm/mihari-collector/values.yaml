@@ -1,0 +1,92 @@
+# Mihari Collector Helm Chart - Default Values
+
+# -- Collector type: "vector" or "otel"
+collector: vector
+
+# -- Mihari configuration
+config:
+  # -- Your Mihari ingestion URL
+  ingestionUrl: "https://app.mihari.io"
+  # -- Source token for authentication (required)
+  sourceToken: ""
+  # -- Technology to collect logs from: postgresql, mysql, nginx, apache, rabbitmq,
+  #    elasticsearch, mongodb, traefik, haproxy, minio, docker, kubernetes
+  technology: "kubernetes"
+
+# -- Image configuration
+image:
+  vector:
+    repository: timberio/vector
+    tag: "0.36.0-distroless-libc"
+    pullPolicy: IfNotPresent
+  otel:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.96.0"
+    pullPolicy: IfNotPresent
+
+# -- Deploy as DaemonSet (one per node) or Deployment (single replica)
+# DaemonSet is recommended for log collection
+deploymentMode: daemonset
+
+# -- Number of replicas (only used when deploymentMode=deployment)
+replicaCount: 1
+
+# -- Resource limits and requests
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -- Node selector
+nodeSelector: {}
+
+# -- Tolerations (e.g., for master nodes)
+tolerations:
+  - key: node-role.kubernetes.io/master
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/control-plane
+    effect: NoSchedule
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# -- RBAC configuration (needed for kubernetes_logs source)
+rbac:
+  create: true
+
+# -- Extra environment variables
+extraEnv: []
+
+# -- Extra volume mounts
+extraVolumeMounts: []
+
+# -- Extra volumes
+extraVolumes: []
+
+# -- Custom Vector/OTEL config (overrides technology-based config)
+customConfig: ""
+
+# -- Vector-specific settings
+vector:
+  # -- API enabled
+  apiEnabled: true
+  # -- API address
+  apiAddress: "127.0.0.1:8686"
+
+# -- OTEL-specific settings
+otel:
+  # -- Health check port
+  healthCheckPort: 13133
+  # -- OTLP gRPC port
+  grpcPort: 4317
+  # -- OTLP HTTP port
+  httpPort: 4318

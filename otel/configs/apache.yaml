@@ -1,0 +1,94 @@
+# Mihari OpenTelemetry Collector Configuration - apache
+# Variables:
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+
+receivers:
+  filelog:
+    include:
+      - "/var/log/apache2/*.log"
+      - "/var/log/httpd/*.log"
+    start_at: beginning
+    operators:
+      - type: regex_parser
+        if: 'body matches "(?i)(ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)"'
+        regex: '(?i)(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)'
+        parse_to: attributes
+        on_error: send
+
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      disk: {}
+      filesystem: {}
+      load: {}
+      memory: {}
+      network: {}
+      process: {}
+
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 1s
+
+  attributes/add_source:
+    actions:
+      - key: service.name
+        value: "apache"
+        action: upsert
+      - key: source_token
+        value: "__SOURCE_TOKEN__"
+        action: upsert
+
+  resourcedetection:
+    detectors: [env, system]
+    system:
+      hostname_sources: ["os"]
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+exporters:
+  otlphttp/logs:
+    endpoint: "__INGESTION_URL__/otel"
+    headers:
+      Authorization: "Bearer __SOURCE_TOKEN__"
+    compression: gzip
+
+  otlphttp/metrics:
+    endpoint: "__INGESTION_URL__/otel"
+    headers:
+      Authorization: "Bearer __SOURCE_TOKEN__"
+    compression: gzip
+
+  otlphttp/traces:
+    endpoint: "__INGESTION_URL__/otel"
+    headers:
+      Authorization: "Bearer __SOURCE_TOKEN__"
+    compression: gzip
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers: [filelog, otlp]
+      processors: [batch, attributes/add_source, resourcedetection]
+      exporters: [otlphttp/logs]
+    metrics:
+      receivers: [hostmetrics, otlp]
+      processors: [batch, attributes/add_source, resourcedetection]
+      exporters: [otlphttp/metrics]
+    traces:
+      receivers: [otlp]
+      processors: [batch, attributes/add_source, resourcedetection]
+      exporters: [otlphttp/traces]

@@ -1,0 +1,167 @@
+# Mihari OpenTelemetry Collector Configuration - All Services
+# Unified config that collects from all supported services
+#
+# Variables:
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+
+receivers:
+  # --- Log collection from all services ---
+  filelog/postgresql:
+    include:
+      - "/var/log/postgresql/*.log"
+      - "/var/lib/postgresql/*/main/log/*.log"
+    start_at: beginning
+    attributes:
+      service.name: postgresql
+
+  filelog/mysql:
+    include:
+      - "/var/log/mysql/*.log"
+    start_at: beginning
+    attributes:
+      service.name: mysql
+
+  filelog/nginx:
+    include:
+      - "/var/log/nginx/*.log"
+    start_at: beginning
+    attributes:
+      service.name: nginx
+
+  filelog/apache:
+    include:
+      - "/var/log/apache2/*.log"
+      - "/var/log/httpd/*.log"
+    start_at: beginning
+    attributes:
+      service.name: apache
+
+  filelog/rabbitmq:
+    include:
+      - "/var/log/rabbitmq/*.log"
+    start_at: beginning
+    attributes:
+      service.name: rabbitmq
+
+  filelog/elasticsearch:
+    include:
+      - "/var/log/elasticsearch/*.log"
+      - "/var/log/elasticsearch/*_server.json"
+    start_at: beginning
+    attributes:
+      service.name: elasticsearch
+
+  filelog/mongodb:
+    include:
+      - "/var/log/mongodb/*.log"
+    start_at: beginning
+    attributes:
+      service.name: mongodb
+
+  filelog/traefik:
+    include:
+      - "/var/log/traefik/*.log"
+    start_at: beginning
+    attributes:
+      service.name: traefik
+
+  filelog/haproxy:
+    include:
+      - "/var/log/haproxy*.log"
+    start_at: beginning
+    attributes:
+      service.name: haproxy
+
+  filelog/minio:
+    include:
+      - "/var/log/minio/*.log"
+    start_at: beginning
+    attributes:
+      service.name: minio
+
+  # --- Metrics ---
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      disk: {}
+      filesystem: {}
+      load: {}
+      memory: {}
+      network: {}
+      process: {}
+
+  # --- OTLP for application instrumentation ---
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 1s
+
+  attributes/add_source:
+    actions:
+      - key: source_token
+        value: "__SOURCE_TOKEN__"
+        action: upsert
+
+  resourcedetection:
+    detectors: [env, system]
+    system:
+      hostname_sources: ["os"]
+
+extensions:
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+exporters:
+  otlphttp/logs:
+    endpoint: "__INGESTION_URL__/otel"
+    headers:
+      Authorization: "Bearer __SOURCE_TOKEN__"
+    compression: gzip
+
+  otlphttp/metrics:
+    endpoint: "__INGESTION_URL__/otel"
+    headers:
+      Authorization: "Bearer __SOURCE_TOKEN__"
+    compression: gzip
+
+  otlphttp/traces:
+    endpoint: "__INGESTION_URL__/otel"
+    headers:
+      Authorization: "Bearer __SOURCE_TOKEN__"
+    compression: gzip
+
+service:
+  extensions: [health_check]
+  pipelines:
+    logs:
+      receivers:
+        - filelog/postgresql
+        - filelog/mysql
+        - filelog/nginx
+        - filelog/apache
+        - filelog/rabbitmq
+        - filelog/elasticsearch
+        - filelog/mongodb
+        - filelog/traefik
+        - filelog/haproxy
+        - filelog/minio
+        - otlp
+      processors: [batch, attributes/add_source, resourcedetection]
+      exporters: [otlphttp/logs]
+    metrics:
+      receivers: [hostmetrics, otlp]
+      processors: [batch, attributes/add_source, resourcedetection]
+      exporters: [otlphttp/metrics]
+    traces:
+      receivers: [otlp]
+      processors: [batch, attributes/add_source, resourcedetection]
+      exporters: [otlphttp/traces]

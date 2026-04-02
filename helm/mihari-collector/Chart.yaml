@@ -1,0 +1,20 @@
+apiVersion: v2
+name: mihari-collector
+description: Mihari telemetry collector for Kubernetes - collects logs, metrics, and traces
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - mihari
+  - observability
+  - logging
+  - metrics
+  - traces
+  - vector
+  - opentelemetry
+home: https://mihari.io
+sources:
+  - https://github.com/mihari-io/collectors
+maintainers:
+  - name: Mihari
+    url: https://mihari.io

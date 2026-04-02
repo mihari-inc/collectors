@@ -1,0 +1,185 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mihari-collector.fullname" . }}-config
+  labels:
+    {{- include "mihari-collector.labels" . | nindent 4 }}
+data:
+  {{- if .Values.customConfig }}
+  config.yaml: |
+    {{- .Values.customConfig | nindent 4 }}
+  {{- else if eq .Values.collector "vector" }}
+  vector.yaml: |
+    api:
+      enabled: {{ .Values.vector.apiEnabled }}
+      address: "{{ .Values.vector.apiAddress }}"
+
+    sources:
+      mihari_kubernetes_logs:
+        type: kubernetes_logs
+        auto_partial_merge: true
+        self_node_name: "${VECTOR_SELF_NODE_NAME}"
+
+      mihari_host_metrics:
+        type: host_metrics
+        collectors: [cpu, disk, filesystem, load, host, memory, network]
+        scrape_interval_secs: 30
+
+    transforms:
+      mihari_kubernetes_parser:
+        type: remap
+        inputs: [mihari_kubernetes_logs]
+        source: |
+          del(.source_type)
+          .dt = del(.timestamp)
+          namespace = .kubernetes.pod_namespace ?? "unknown"
+          pod = .kubernetes.pod_name ?? "unknown"
+          container = .kubernetes.container_name ?? "unknown"
+          node = .kubernetes.pod_node_name ?? "unknown"
+          level = "info"
+          level_parsed, err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL|PANIC)\b')
+          if err == null {
+            level = downcase(level_parsed.level)
+          }
+          if .stream == "stderr" {
+            level = "error"
+          }
+          .level = level
+          raw = {}
+          raw.message = .message
+          raw.level = level
+          raw.service = join!([namespace, pod, container], "/")
+          raw.host = node
+          raw.k8s_namespace = namespace
+          raw.k8s_pod = pod
+          raw.k8s_container = container
+          raw.k8s_node = node
+          raw.k8s_labels = encode_json(.kubernetes.pod_labels ?? {})
+          .raw = encode_json(raw)
+
+      mihari_metrics_to_logs:
+        type: metric_to_log
+        inputs: [mihari_host_metrics]
+
+      mihari_metrics_formatter:
+        type: remap
+        inputs: [mihari_metrics_to_logs]
+        source: |
+          del(.source_type)
+          .dt = del(.timestamp)
+
+    sinks:
+      mihari_logs_sink:
+        type: http
+        inputs: [mihari_kubernetes_parser]
+        uri: "{{ .Values.config.ingestionUrl }}/v1/ingest/logs"
+        method: post
+        encoding:
+          codec: json
+        compression: gzip
+        auth:
+          strategy: bearer
+          token: "{{ .Values.config.sourceToken }}"
+        batch:
+          max_bytes: 1048576
+          timeout_secs: 1
+
+      mihari_metrics_sink:
+        type: http
+        inputs: [mihari_metrics_formatter]
+        uri: "{{ .Values.config.ingestionUrl }}/v1/ingest/metrics"
+        method: post
+        encoding:
+          codec: json
+        compression: gzip
+        auth:
+          strategy: bearer
+          token: "{{ .Values.config.sourceToken }}"
+        batch:
+          max_bytes: 1048576
+          timeout_secs: 5
+
+  {{- else if eq .Values.collector "otel" }}
+  config.yaml: |
+    receivers:
+      filelog:
+        include:
+          - "/var/log/pods/*/*.log"
+          - "/var/log/containers/*.log"
+        start_at: beginning
+        operators:
+          - type: regex_parser
+            if: 'body matches "(?i)(ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)"'
+            regex: '(?i)(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)'
+            parse_to: attributes
+            on_error: send
+
+      hostmetrics:
+        collection_interval: 30s
+        scrapers:
+          cpu: {}
+          disk: {}
+          filesystem: {}
+          load: {}
+          memory: {}
+          network: {}
+
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:{{ .Values.otel.grpcPort }}"
+          http:
+            endpoint: "0.0.0.0:{{ .Values.otel.httpPort }}"
+
+    processors:
+      batch:
+        send_batch_size: 1024
+        timeout: 1s
+      attributes/add_source:
+        actions:
+          - key: service.name
+            value: "{{ .Values.config.technology }}"
+            action: upsert
+          - key: source_token
+            value: "{{ .Values.config.sourceToken }}"
+            action: upsert
+      resourcedetection:
+        detectors: [env, system]
+
+    extensions:
+      health_check:
+        endpoint: "0.0.0.0:{{ .Values.otel.healthCheckPort }}"
+
+    exporters:
+      otlphttp/logs:
+        endpoint: "{{ .Values.config.ingestionUrl }}/otel"
+        headers:
+          Authorization: "Bearer {{ .Values.config.sourceToken }}"
+        compression: gzip
+      otlphttp/metrics:
+        endpoint: "{{ .Values.config.ingestionUrl }}/otel"
+        headers:
+          Authorization: "Bearer {{ .Values.config.sourceToken }}"
+        compression: gzip
+      otlphttp/traces:
+        endpoint: "{{ .Values.config.ingestionUrl }}/otel"
+        headers:
+          Authorization: "Bearer {{ .Values.config.sourceToken }}"
+        compression: gzip
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        logs:
+          receivers: [filelog, otlp]
+          processors: [batch, attributes/add_source, resourcedetection]
+          exporters: [otlphttp/logs]
+        metrics:
+          receivers: [hostmetrics, otlp]
+          processors: [batch, attributes/add_source, resourcedetection]
+          exporters: [otlphttp/metrics]
+        traces:
+          receivers: [otlp]
+          processors: [batch, attributes/add_source, resourcedetection]
+          exporters: [otlphttp/traces]
+  {{- end }}
