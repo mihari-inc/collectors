@@ -26,7 +26,7 @@ sync-collectors:
     - git checkout -
     # Push tags
     - |
-      for tag in $(git tag -l "collectors do
+      for tag in $(git tag -l "collectors-*"); do
         TAG_SHA=$(splitsh-lite --prefix=collectors/ --origin="refs/tags/$tag")
         CLEAN_TAG=$(echo $tag | sed 's/collectors-//')
         git push github ${TAG_SHA}:refs/tags/${CLEAN_TAG} --force
