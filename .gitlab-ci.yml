@@ -14,9 +14,6 @@ sync-collectors:
   image: alpine:latest
   variables:
     GIT_DEPTH: 0
-  only:
-    - main
-    - tags
   before_script:
     - apk add --no-cache git curl libc6-compat
     - curl -L -o /tmp/splitsh-lite.tar.gz https://github.com/splitsh/lite/releases/download/v1.0.1/lite_linux_amd64.tar.gz
