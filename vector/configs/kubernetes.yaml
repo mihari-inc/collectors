@@ -34,7 +34,7 @@ transforms:
       level = "info"
       level_parsed, err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL|PANIC)\b')
       if err == null {
-        level = downcase(level_parsed.level)
+        level = downcase!(level_parsed.level)
       }
       if .stream == "stderr" {
         level = "error"
@@ -67,7 +67,7 @@ sinks:
   mihari_logs_sink:
     type: http
     inputs: [mihari_kubernetes_parser]
-    uri: "__INGESTION_URL__/v1/ingest/logs"
+    uri: "__INGESTION_URL__/api/v1/ingest/logs"
     method: post
     encoding:
       codec: json
@@ -82,7 +82,7 @@ sinks:
   mihari_metrics_sink:
     type: http
     inputs: [mihari_metrics_formatter]
-    uri: "__INGESTION_URL__/v1/ingest/metrics"
+    uri: "__INGESTION_URL__/api/v1/ingest/metrics"
     method: post
     encoding:
       codec: json

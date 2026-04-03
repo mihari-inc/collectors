@@ -1,0 +1,21 @@
+# Mihari Prometheus Configuration
+# Scrapes node_exporter and sends metrics via remote_write
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: "node"
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
+
+remote_write:
+  - url: "__INGESTION_URL__/api/v1/ingest/metrics"
+    authorization:
+      type: Bearer
+      credentials: "__SOURCE_TOKEN__"

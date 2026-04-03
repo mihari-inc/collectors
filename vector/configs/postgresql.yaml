@@ -38,7 +38,7 @@ transforms:
       .dt = del(.timestamp)
       parsed, err = parse_regex(.message, r'^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \w+) \[(?P<pid>\d+)\] (?:(?P<user>\w+)@(?P<database>\w+) )?(?P<level>\w+):\s+(?P<msg>.*)')
       if err == null {
-        .level = downcase(parsed.level ?? "info")
+        .level = downcase!(parsed.level ?? "info")
         .message = parsed.msg ?? .message
         raw = {}
         raw.message = .message
@@ -72,7 +72,7 @@ sinks:
   mihari_logs_sink:
     type: http
     inputs: [mihari_postgresql_parser]
-    uri: "__INGESTION_URL__/v1/ingest/logs"
+    uri: "__INGESTION_URL__/api/v1/ingest/logs"
     method: post
     encoding:
       codec: json
@@ -87,7 +87,7 @@ sinks:
   mihari_metrics_sink:
     type: http
     inputs: [mihari_metrics_formatter]
-    uri: "__INGESTION_URL__/v1/ingest/metrics"
+    uri: "__INGESTION_URL__/api/v1/ingest/metrics"
     method: post
     encoding:
       codec: json

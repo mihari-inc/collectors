@@ -31,18 +31,20 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # --- Validation ---
 validate_config() {
     local errors=0
+    local placeholder_prefix="__"
+    local placeholder_suffix="__"
 
-    if [[ "$INGESTION_URL" == "__INGESTION_URL__" || -z "$INGESTION_URL" ]]; then
+    if [[ "$INGESTION_URL" == "${placeholder_prefix}INGESTION_URL${placeholder_suffix}" || -z "$INGESTION_URL" ]]; then
         error "INGESTION_URL is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
 
-    if [[ "$SOURCE_TOKEN" == "__SOURCE_TOKEN__" || -z "$SOURCE_TOKEN" ]]; then
+    if [[ "$SOURCE_TOKEN" == "${placeholder_prefix}SOURCE_TOKEN${placeholder_suffix}" || -z "$SOURCE_TOKEN" ]]; then
         error "SOURCE_TOKEN is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
 
-    if [[ "$TECHNOLOGY" == "__TECHNOLOGY__" || -z "$TECHNOLOGY" ]]; then
+    if [[ "$TECHNOLOGY" == "${placeholder_prefix}TECHNOLOGY${placeholder_suffix}" || -z "$TECHNOLOGY" ]]; then
         error "TECHNOLOGY is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
@@ -83,6 +85,90 @@ detect_os() {
     esac
 
     echo "$os"
+}
+
+# --- Install node_exporter (for prometheus technology) ---
+install_node_exporter() {
+    if [[ "$TECHNOLOGY" != "prometheus" ]]; then
+        return 0
+    fi
+
+    if command -v node_exporter &>/dev/null || systemctl is-active --quiet prometheus-node-exporter 2>/dev/null; then
+        success "node_exporter is already installed"
+        return 0
+    fi
+
+    local os
+    os=$(detect_os)
+
+    info "Installing node_exporter..."
+
+    case "$os" in
+        debian)
+            sudo apt-get update -qq
+            sudo apt-get install -y prometheus-node-exporter
+            sudo systemctl enable prometheus-node-exporter
+            sudo systemctl start prometheus-node-exporter
+            ;;
+        rhel)
+            sudo yum install -y golang-github-prometheus-node-exporter || {
+                # Fallback: install from binary
+                local version="1.8.2"
+                local arch
+                arch=$(uname -m)
+                case "$arch" in
+                    x86_64) arch="amd64" ;;
+                    aarch64) arch="arm64" ;;
+                esac
+                local url="https://github.com/prometheus/node_exporter/releases/download/v${version}/node_exporter-${version}.linux-${arch}.tar.gz"
+                local tmp_dir
+                tmp_dir=$(mktemp -d)
+                curl -fsSL "$url" | tar xz -C "$tmp_dir" --strip-components=1
+                sudo mv "$tmp_dir/node_exporter" /usr/local/bin/
+                rm -rf "$tmp_dir"
+
+                # Create systemd unit
+                sudo tee /etc/systemd/system/prometheus-node-exporter.service > /dev/null <<'UNIT'
+[Unit]
+Description=Prometheus Node Exporter
+After=network.target
+
+[Service]
+User=nobody
+ExecStart=/usr/local/bin/node_exporter
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+                sudo systemctl daemon-reload
+                sudo systemctl enable prometheus-node-exporter
+                sudo systemctl start prometheus-node-exporter
+            }
+            ;;
+        macos)
+            if command -v brew &>/dev/null; then
+                brew install node_exporter
+                brew services start node_exporter
+            else
+                error "Homebrew is required on macOS to install node_exporter"
+                return 1
+            fi
+            ;;
+        *)
+            warn "Could not auto-install node_exporter on this OS"
+            warn "Install it manually: https://github.com/prometheus/node_exporter"
+            return 0
+            ;;
+    esac
+
+    sleep 2
+
+    if curl -fsSL http://127.0.0.1:9100/metrics &>/dev/null; then
+        success "node_exporter is running on :9100"
+    else
+        warn "node_exporter may not be responding yet. Check: curl http://127.0.0.1:9100/metrics"
+    fi
 }
 
 # --- Install Vector ---
@@ -177,6 +263,81 @@ apply_config() {
 generate_local_config() {
     local output_file="$1"
 
+    if [[ "$TECHNOLOGY" == "prometheus" ]]; then
+        generate_prometheus_config "$output_file"
+    else
+        generate_standard_config "$output_file"
+    fi
+}
+
+generate_prometheus_config() {
+    local output_file="$1"
+
+    cat > "$output_file" <<YAML
+# Mihari Vector Configuration - Prometheus
+# Technology: prometheus
+# Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_prometheus_scrape:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9100/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+    filesystem:
+      devices:
+        excludes: ["overlay*", "tmpfs", "nsfs"]
+      filesystems:
+        excludes: ["overlay", "tmpfs", "nsfs"]
+      mountpoints:
+        excludes: ["/var/lib/docker/*"]
+
+transforms:
+  mihari_metrics_to_logs:
+    type: metric_to_log
+    inputs:
+      - mihari_prometheus_scrape
+      - mihari_host_metrics
+
+  mihari_metrics_formatter:
+    type: remap
+    inputs:
+      - mihari_metrics_to_logs
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+
+sinks:
+  mihari_metrics_sink:
+    type: http
+    inputs:
+      - mihari_metrics_formatter
+    uri: "${INGESTION_URL}/api/v1/ingest/metrics"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "${SOURCE_TOKEN}"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5
+YAML
+}
+
+generate_standard_config() {
+    local output_file="$1"
+
     cat > "$output_file" <<YAML
 # Mihari Vector Configuration
 # Technology: ${TECHNOLOGY}
@@ -196,15 +357,15 @@ $(get_log_paths "$TECHNOLOGY")
 
   mihari_host_metrics:
     type: host_metrics
-    collectors:
-      - cpu
-      - disk
-      - filesystem
-      - load
-      - host
-      - memory
-      - network
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
     scrape_interval_secs: 30
+    filesystem:
+      devices:
+        excludes: ["overlay*", "tmpfs", "nsfs"]
+      filesystems:
+        excludes: ["overlay", "tmpfs", "nsfs"]
+      mountpoints:
+        excludes: ["/var/lib/docker/*"]
 
 transforms:
   mihari_${TECHNOLOGY}_parser:
@@ -221,12 +382,20 @@ $(get_parser_vrl "$TECHNOLOGY")
     inputs:
       - mihari_host_metrics
 
+  mihari_metrics_formatter:
+    type: remap
+    inputs:
+      - mihari_metrics_to_logs
+    source: |
+      del(.source_type)
+      .dt = del(.timestamp)
+
 sinks:
   mihari_logs_sink:
     type: http
     inputs:
       - mihari_${TECHNOLOGY}_parser
-    uri: "${INGESTION_URL}/v1/ingest/logs"
+    uri: "${INGESTION_URL}/api/v1/ingest/logs"
     method: post
     encoding:
       codec: json
@@ -241,8 +410,8 @@ sinks:
   mihari_metrics_sink:
     type: http
     inputs:
-      - mihari_metrics_to_logs
-    uri: "${INGESTION_URL}/v1/ingest/metrics"
+      - mihari_metrics_formatter
+    uri: "${INGESTION_URL}/api/v1/ingest/metrics"
     method: post
     encoding:
       codec: json
@@ -318,7 +487,7 @@ get_parser_vrl() {
       # Parse PostgreSQL log format
       parsed, err = parse_regex(.message, r'^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \w+) \[(?P<pid>\d+)\] (?:(?P<user>\w+)@(?P<database>\w+) )?(?P<level>\w+):  (?P<msg>.*)')
       if err == null {
-        .level = downcase(parsed.level ?? "info")
+        .level = downcase!(parsed.level ?? "info")
         .postgresql_pid = parsed.pid
         .postgresql_user = parsed.user
         .postgresql_database = parsed.database
@@ -331,7 +500,7 @@ VRL
       # Parse MySQL log format
       parsed, err = parse_regex(.message, r'^(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z) (?P<thread>\d+) \[(?P<level>\w+)\] (?:\[(?P<code>\w+)\] \[(?P<subsystem>\w+)\] )?(?P<msg>.*)')
       if err == null {
-        .level = downcase(parsed.level ?? "info")
+        .level = downcase!(parsed.level ?? "info")
         .mysql_thread = parsed.thread
         .message = parsed.msg ?? .message
       }
@@ -368,7 +537,7 @@ VRL
       # Parse RabbitMQ log format
       parsed, err = parse_regex(.message, r'^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \[(?P<level>\w+)\] <(?P<pid>[^>]+)> (?P<msg>.*)')
       if err == null {
-        .level = downcase(parsed.level ?? "info")
+        .level = downcase!(parsed.level ?? "info")
         .rabbitmq_pid = parsed.pid
         .message = parsed.msg ?? .message
       }
@@ -379,7 +548,7 @@ VRL
       # Parse Elasticsearch JSON log format
       parsed, err = parse_json(.message)
       if err == null {
-        .level = downcase(parsed.level ?? parsed.log.level ?? "info")
+        .level = downcase!(parsed.level ?? parsed.log.level ?? "info")
         .elasticsearch_component = parsed.component
         .elasticsearch_cluster = parsed.cluster.name
         .elasticsearch_node = parsed.node.name
@@ -436,7 +605,7 @@ VRL
       # Parse MinIO audit/server log (JSON)
       parsed, err = parse_json(.message)
       if err == null {
-        .level = downcase(parsed.level ?? "info")
+        .level = downcase!(parsed.level ?? "info")
         .minio_api = parsed.api.name
         .minio_bucket = parsed.api.bucket
         .minio_object = parsed.api.object
@@ -455,7 +624,7 @@ VRL
         # Try to extract level from log message
         level_parsed, level_err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)\b')
         if level_err == null {
-          .level = downcase(level_parsed.level)
+          .level = downcase!(level_parsed.level)
         }
       }
 VRL
@@ -483,11 +652,28 @@ VRL
       # Generic log parser
       level_parsed, err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)\b')
       if err == null {
-        .level = downcase(level_parsed.level)
+        .level = downcase!(level_parsed.level)
       }
 VRL
             ;;
     esac
+}
+
+# --- Configure Permissions ---
+configure_permissions() {
+    if [[ "$TECHNOLOGY" == "docker" ]]; then
+        local os
+        os=$(detect_os)
+        if [[ "$os" != "macos" ]] && getent group docker &>/dev/null; then
+            if ! id -nG vector 2>/dev/null | grep -qw docker; then
+                info "Adding vector user to docker group..."
+                sudo usermod -aG docker vector
+                success "vector user added to docker group"
+            else
+                success "vector user already in docker group"
+            fi
+        fi
+    fi
 }
 
 # --- Start/Restart Vector ---
@@ -536,6 +722,7 @@ main() {
 
     install_vector
     apply_config
+    configure_permissions
     restart_vector
 
     echo ""

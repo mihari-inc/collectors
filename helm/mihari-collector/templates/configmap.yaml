@@ -39,7 +39,7 @@ data:
           level = "info"
           level_parsed, err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL|PANIC)\b')
           if err == null {
-            level = downcase(level_parsed.level)
+            level = downcase!(level_parsed.level)
           }
           if .stream == "stderr" {
             level = "error"
