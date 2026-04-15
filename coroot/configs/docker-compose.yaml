@@ -1,0 +1,48 @@
+# Mihari Collector — Service Map & eBPF Observability
+#
+# Two-container architecture (inspired by BetterStack):
+#   1. coroot-node-agent: eBPF instrumentation (privileged, host PID/network)
+#   2. mihari-collector: Vector data pipeline (transforms + ships to Mihari)
+#
+# Usage:
+#   1. Replace __INGESTION_URL__ and __SOURCE_TOKEN__
+#   2. docker compose -f docker-compose.yaml up -d
+#
+# Variables:
+#   __INGESTION_URL__ — Your Mihari instance URL (e.g., https://app.mihari.io)
+#   __SOURCE_TOKEN__  — Bearer token for authentication
+
+services:
+  # eBPF agent: captures network connections + L7 traces from the kernel
+  coroot-node-agent:
+    image: ghcr.io/coroot/coroot-node-agent:latest
+    container_name: mihari-ebpf
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    network_mode: host
+    command:
+      - "--cgroupfs-root=/host/sys/fs/cgroup"
+      - "--metrics-endpoint=http://127.0.0.1:39090"
+      - "--traces-endpoint=http://127.0.0.1:34318"
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+      - /sys/kernel/tracing:/sys/kernel/tracing:rw
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 1024m
+    environment:
+      - GOMEMLIMIT=512MiB
+
+  # Collector: receives from eBPF agent, transforms, ships to Mihari
+  mihari-collector:
+    image: timberio/vector:0.47.0-distroless-libc
+    container_name: mihari-collector
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+    environment:
+      - INGESTION_URL=__INGESTION_URL__
+      - SOURCE_TOKEN=__SOURCE_TOKEN__
+      - VECTOR_LOG=info

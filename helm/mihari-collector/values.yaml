@@ -6,7 +6,7 @@ collector: vector
 # -- Mihari configuration
 config:
   # -- Your Mihari ingestion URL
-  ingestionUrl: "https://app.mihari.io"
+  ingestionUrl: "https://platform.mihari.io"
   # -- Source token for authentication (required)
   sourceToken: ""
   # -- Technology to collect logs from: postgresql, mysql, nginx, apache, rabbitmq,

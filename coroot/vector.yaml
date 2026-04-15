@@ -1,0 +1,85 @@
+# Mihari Collector — Vector configuration
+# Receives Prometheus Remote Write + OTLP from coroot-node-agent,
+# transforms container names, and ships to Mihari API.
+#
+# Environment variables (required):
+#   INGESTION_URL  — Mihari instance URL (e.g., https://app.mihari.io)
+#   SOURCE_TOKEN   — Bearer token for authentication
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+sources:
+  coroot_metrics:
+    type: prometheus_remote_write
+    address: "0.0.0.0:39090"
+  coroot_traces:
+    type: opentelemetry
+    grpc:
+      address: "0.0.0.0:34317"
+    http:
+      address: "0.0.0.0:34318"
+
+transforms:
+  metrics_enriched:
+    type: remap
+    inputs:
+      - coroot_metrics
+    source: |
+      container_id, err = to_string(.tags.container_id)
+      if err == null && container_id != "" {
+        clean_name = replace(container_id, r'^/docker/', "")
+        clean_name = replace(clean_name, r'^/system\.slice/', "")
+        clean_name = replace(clean_name, r'\.service$', "")
+        clean_name = replace(clean_name, r'\.scope$', "")
+        clean_name = replace(clean_name, r'-\d+$', "")
+        .tags.service_name = clean_name
+      }
+
+  traces_enriched:
+    type: remap
+    inputs:
+      - coroot_traces.traces
+    source: |
+      svc = del(.resource."service.name")
+      if svc != null {
+        clean, err = to_string(svc)
+        if err == null {
+          clean = replace(clean, r'^/docker/', "")
+          clean = replace(clean, r'^/system\.slice/', "")
+          clean = replace(clean, r'\.service$', "")
+          clean = replace(clean, r'\.scope$', "")
+          clean = replace(clean, r'-\d+$', "")
+          .resource."service.name" = clean
+        }
+      }
+
+sinks:
+  mihari_metrics:
+    type: prometheus_remote_write
+    inputs:
+      - metrics_enriched
+    endpoint: "${INGESTION_URL}/api/prom/v1/write"
+    auth:
+      strategy: "bearer"
+      token: "${SOURCE_TOKEN}"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5
+  mihari_traces:
+    type: http
+    inputs:
+      - traces_enriched
+    uri: "${INGESTION_URL}/api/otel/v1/traces"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5
+    request:
+      headers:
+        Authorization: "Bearer ${SOURCE_TOKEN}"
+        Content-Type: "application/json"

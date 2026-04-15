@@ -6,7 +6,7 @@
 #   curl -fsSL https://YOUR_HOST/setup-vector/TECHNOLOGY/SOURCE_TOKEN | bash
 #
 # Or manually:
-#   INGESTION_URL=https://app.mihari.io SOURCE_TOKEN=xxx TECHNOLOGY=postgresql bash install.sh
+#   INGESTION_URL=https://platform.mihari.io SOURCE_TOKEN=xxx TECHNOLOGY=postgresql bash install.sh
 #
 
 set -euo pipefail
@@ -52,7 +52,7 @@ validate_config() {
     if [[ $errors -gt 0 ]]; then
         echo ""
         echo "Usage:"
-        echo "  INGESTION_URL=https://app.mihari.io SOURCE_TOKEN=your_token TECHNOLOGY=postgresql bash install.sh"
+        echo "  INGESTION_URL=https://platform.mihari.io SOURCE_TOKEN=your_token TECHNOLOGY=postgresql bash install.sh"
         exit 1
     fi
 }

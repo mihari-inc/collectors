@@ -67,7 +67,7 @@ All configs use these variables (replaced by the setup scripts):
 
 | Variable          | Description                                   | Example                           |
 |-------------------|-----------------------------------------------|-----------------------------------|
-| `INGESTION_URL`   | Your Mihari instance URL                      | `https://app.mihari.io`          |
+| `INGESTION_URL`   | Your Mihari instance URL                      | `https://platform.mihari.io`          |
 | `SOURCE_TOKEN`    | Bearer token for authentication               | `njaXhgqScw3yUwsoWdwSW5rc`      |
 | `TECHNOLOGY`      | Target technology                             | `postgresql`                      |
 
