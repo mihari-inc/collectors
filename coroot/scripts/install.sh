@@ -31,11 +31,11 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # ── Validation ──
 validate_config() {
     local errors=0
-    if [[ "$INGESTION_URL" == "__INGESTION_URL__" || -z "$INGESTION_URL" ]]; then
+    if [[ "$INGESTION_URL" == __*__ || -z "$INGESTION_URL" ]]; then
         error "INGESTION_URL is not set."
         errors=$((errors + 1))
     fi
-    if [[ "$SOURCE_TOKEN" == "__SOURCE_TOKEN__" || -z "$SOURCE_TOKEN" ]]; then
+    if [[ "$SOURCE_TOKEN" == __*__ || -z "$SOURCE_TOKEN" ]]; then
         error "SOURCE_TOKEN is not set."
         errors=$((errors + 1))
     fi

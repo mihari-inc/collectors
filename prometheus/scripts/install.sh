@@ -30,15 +30,14 @@ error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # --- Validation ---
 validate_config() {
     local errors=0
-    local placeholder_prefix="__"
-    local placeholder_suffix="__"
+    
 
-    if [[ "$INGESTION_URL" == "${placeholder_prefix}INGESTION_URL${placeholder_suffix}" || -z "$INGESTION_URL" ]]; then
+    if [[ "$INGESTION_URL" == __*__ || -z "$INGESTION_URL" ]]; then
         error "INGESTION_URL is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
 
-    if [[ "$SOURCE_TOKEN" == "${placeholder_prefix}SOURCE_TOKEN${placeholder_suffix}" || -z "$SOURCE_TOKEN" ]]; then
+    if [[ "$SOURCE_TOKEN" == __*__ || -z "$SOURCE_TOKEN" ]]; then
         error "SOURCE_TOKEN is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi

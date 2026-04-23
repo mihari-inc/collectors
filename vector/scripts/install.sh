@@ -34,17 +34,17 @@ validate_config() {
     local placeholder_prefix="__"
     local placeholder_suffix="__"
 
-    if [[ "$INGESTION_URL" == "${placeholder_prefix}INGESTION_URL${placeholder_suffix}" || -z "$INGESTION_URL" ]]; then
+    if [[ -z "$INGESTION_URL" || "$INGESTION_URL" == __*__ ]]; then
         error "INGESTION_URL is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
 
-    if [[ "$SOURCE_TOKEN" == "${placeholder_prefix}SOURCE_TOKEN${placeholder_suffix}" || -z "$SOURCE_TOKEN" ]]; then
+    if [[ -z "$SOURCE_TOKEN" || "$SOURCE_TOKEN" == __*__ ]]; then
         error "SOURCE_TOKEN is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
 
-    if [[ "$TECHNOLOGY" == "${placeholder_prefix}TECHNOLOGY${placeholder_suffix}" || -z "$TECHNOLOGY" ]]; then
+    if [[ -z "$TECHNOLOGY" || "$TECHNOLOGY" == __*__ ]]; then
         error "TECHNOLOGY is not set. Export it or pass it via the setup URL."
         errors=$((errors + 1))
     fi
