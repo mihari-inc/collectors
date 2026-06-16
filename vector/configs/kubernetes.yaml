@@ -1,9 +1,20 @@
 # Mihari Vector Configuration - Kubernetes
 # Auto-discovers pods and enriches with K8s metadata
 #
-# Variables:
+# Variables (replaced by setup script):
 #   __INGESTION_URL__ - Your Mihari instance URL
 #   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the container log line
+#   level     - trace|debug|info|warn|error|fatal (keyword sniffed from the
+#               message; stderr lines without a keyword default to error)
+#   timestamp - event time as reported by the container runtime. Never renamed.
+#   service   - pod label "app.kubernetes.io/name", falling back to
+#               "<namespace>/<pod>"
+#   host      - the node name running the pod
+# Any other top-level key (k8s_namespace, k8s_pod, k8s_container, k8s_node,
+# k8s_labels, stream, ...) is stored as a searchable string attribute.
 
 api:
   enabled: true
@@ -26,48 +37,39 @@ transforms:
     inputs: [mihari_kubernetes_logs]
     source: |
       del(.source_type)
-      .dt = del(.timestamp)
-      namespace = .kubernetes.pod_namespace ?? "unknown"
-      pod = .kubernetes.pod_name ?? "unknown"
-      container = .kubernetes.container_name ?? "unknown"
-      node = .kubernetes.pod_node_name ?? "unknown"
-      level = "info"
-      level_parsed, err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL|PANIC)\b')
-      if err == null {
-        level = downcase!(level_parsed.level)
+      del(.file)
+      namespace = string(.kubernetes.pod_namespace) ?? "unknown"
+      pod = string(.kubernetes.pod_name) ?? "unknown"
+      container = string(.kubernetes.container_name) ?? "unknown"
+      node = string(.kubernetes.pod_node_name) ?? ""
+      app_label = string(.kubernetes.pod_labels."app.kubernetes.io/name") ?? ""
+      .service = if app_label != "" { app_label } else { namespace + "/" + pod }
+      .host = if node != "" { node } else { get_hostname!() }
+      .k8s_namespace = namespace
+      .k8s_pod = pod
+      .k8s_container = container
+      if node != "" { .k8s_node = node }
+      if exists(.kubernetes.pod_labels) { .k8s_labels = encode_json(object(.kubernetes.pod_labels) ?? {}) }
+      if exists(.kubernetes.container_image) { .k8s_image = string(.kubernetes.container_image) ?? "" }
+      del(.kubernetes)
+      lvl = ""
+      level_parsed, level_err = parse_regex(string(.message) ?? "", r'(?i)\b(?P<level>TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|CRITICAL|FATAL|PANIC)\b')
+      if level_err == null {
+        lvl = downcase(string(level_parsed.level) ?? "info")
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "notice" { lvl = "info" }
+        if lvl == "critical" { lvl = "error" }
+        if lvl == "panic" { lvl = "fatal" }
       }
-      if .stream == "stderr" {
-        level = "error"
-      }
-      .level = level
-      raw = {}
-      raw.message = .message
-      raw.level = level
-      raw.service = join!([namespace, pod, container], "/")
-      raw.host = node
-      raw.k8s_namespace = namespace
-      raw.k8s_pod = pod
-      raw.k8s_container = container
-      raw.k8s_node = node
-      raw.k8s_labels = encode_json(.kubernetes.pod_labels ?? {})
-      .raw = encode_json(raw)
-
-  mihari_metrics_to_logs:
-    type: metric_to_log
-    inputs: [mihari_host_metrics]
-
-  mihari_metrics_formatter:
-    type: remap
-    inputs: [mihari_metrics_to_logs]
-    source: |
-      del(.source_type)
-      .dt = del(.timestamp)
+      if lvl == "" && .stream == "stderr" { lvl = "error" }
+      if lvl == "" { lvl = "info" }
+      .level = lvl
 
 sinks:
   mihari_logs_sink:
     type: http
     inputs: [mihari_kubernetes_parser]
-    uri: "__INGESTION_URL__/api/v1/ingest/logs"
+    uri: "__INGESTION_URL__/v1/ingest/vector"
     method: post
     encoding:
       codec: json
@@ -80,13 +82,9 @@ sinks:
       timeout_secs: 1
 
   mihari_metrics_sink:
-    type: http
-    inputs: [mihari_metrics_formatter]
-    uri: "__INGESTION_URL__/api/v1/ingest/metrics"
-    method: post
-    encoding:
-      codec: json
-    compression: gzip
+    type: prometheus_remote_write
+    inputs: [mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
     auth:
       strategy: bearer
       token: "__SOURCE_TOKEN__"

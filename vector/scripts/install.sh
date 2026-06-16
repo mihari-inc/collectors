@@ -301,31 +301,13 @@ sources:
       mountpoints:
         excludes: ["/var/lib/docker/*"]
 
-transforms:
-  mihari_metrics_to_logs:
-    type: metric_to_log
+sinks:
+  mihari_metrics_sink:
+    type: prometheus_remote_write
     inputs:
       - mihari_prometheus_scrape
       - mihari_host_metrics
-
-  mihari_metrics_formatter:
-    type: remap
-    inputs:
-      - mihari_metrics_to_logs
-    source: |
-      del(.source_type)
-      .dt = del(.timestamp)
-
-sinks:
-  mihari_metrics_sink:
-    type: http
-    inputs:
-      - mihari_metrics_formatter
-    uri: "${INGESTION_URL}/api/v1/ingest/metrics"
-    method: post
-    encoding:
-      codec: json
-    compression: gzip
+    endpoint: "${INGESTION_URL}/v1/ingest/prometheus"
     auth:
       strategy: bearer
       token: "${SOURCE_TOKEN}"
@@ -377,25 +359,12 @@ transforms:
       .dt = del(.timestamp)
 $(get_parser_vrl "$TECHNOLOGY")
 
-  mihari_metrics_to_logs:
-    type: metric_to_log
-    inputs:
-      - mihari_host_metrics
-
-  mihari_metrics_formatter:
-    type: remap
-    inputs:
-      - mihari_metrics_to_logs
-    source: |
-      del(.source_type)
-      .dt = del(.timestamp)
-
 sinks:
   mihari_logs_sink:
     type: http
     inputs:
       - mihari_${TECHNOLOGY}_parser
-    uri: "${INGESTION_URL}/api/v1/ingest/logs"
+    uri: "${INGESTION_URL}/v1/ingest/vector"
     method: post
     encoding:
       codec: json
@@ -408,14 +377,10 @@ sinks:
       timeout_secs: 1
 
   mihari_metrics_sink:
-    type: http
+    type: prometheus_remote_write
     inputs:
-      - mihari_metrics_formatter
-    uri: "${INGESTION_URL}/api/v1/ingest/metrics"
-    method: post
-    encoding:
-      codec: json
-    compression: gzip
+      - mihari_host_metrics
+    endpoint: "${INGESTION_URL}/v1/ingest/prometheus"
     auth:
       strategy: bearer
       token: "${SOURCE_TOKEN}"

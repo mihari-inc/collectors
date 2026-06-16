@@ -57,22 +57,11 @@ data:
           raw.k8s_labels = encode_json(.kubernetes.pod_labels ?? {})
           .raw = encode_json(raw)
 
-      mihari_metrics_to_logs:
-        type: metric_to_log
-        inputs: [mihari_host_metrics]
-
-      mihari_metrics_formatter:
-        type: remap
-        inputs: [mihari_metrics_to_logs]
-        source: |
-          del(.source_type)
-          .dt = del(.timestamp)
-
     sinks:
       mihari_logs_sink:
         type: http
         inputs: [mihari_kubernetes_parser]
-        uri: "{{ .Values.config.ingestionUrl }}/v1/ingest/logs"
+        uri: "{{ .Values.config.ingestionUrl }}/v1/ingest/vector"
         method: post
         encoding:
           codec: json
@@ -85,13 +74,9 @@ data:
           timeout_secs: 1
 
       mihari_metrics_sink:
-        type: http
-        inputs: [mihari_metrics_formatter]
-        uri: "{{ .Values.config.ingestionUrl }}/v1/ingest/metrics"
-        method: post
-        encoding:
-          codec: json
-        compression: gzip
+        type: prometheus_remote_write
+        inputs: [mihari_host_metrics]
+        endpoint: "{{ .Values.config.ingestionUrl }}/v1/ingest/prometheus"
         auth:
           strategy: bearer
           token: "{{ .Values.config.sourceToken }}"
@@ -152,17 +137,17 @@ data:
 
     exporters:
       otlphttp/logs:
-        endpoint: "{{ .Values.config.ingestionUrl }}/otel"
+        endpoint: "{{ .Values.config.ingestionUrl }}/v1/ingest/otlp"
         headers:
           Authorization: "Bearer {{ .Values.config.sourceToken }}"
         compression: gzip
       otlphttp/metrics:
-        endpoint: "{{ .Values.config.ingestionUrl }}/otel"
+        endpoint: "{{ .Values.config.ingestionUrl }}/v1/ingest/otlp"
         headers:
           Authorization: "Bearer {{ .Values.config.sourceToken }}"
         compression: gzip
       otlphttp/traces:
-        endpoint: "{{ .Values.config.ingestionUrl }}/otel"
+        endpoint: "{{ .Values.config.ingestionUrl }}/v1/ingest/otlp"
         headers:
           Authorization: "Bearer {{ .Values.config.sourceToken }}"
         compression: gzip

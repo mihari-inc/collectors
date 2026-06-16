@@ -65,19 +65,19 @@ extensions:
 
 exporters:
   otlphttp/logs:
-    endpoint: "__INGESTION_URL__/otel"
+    endpoint: "__INGESTION_URL__/v1/ingest/otlp"
     headers:
       Authorization: "Bearer __SOURCE_TOKEN__"
     compression: gzip
 
   otlphttp/metrics:
-    endpoint: "__INGESTION_URL__/otel"
+    endpoint: "__INGESTION_URL__/v1/ingest/otlp"
     headers:
       Authorization: "Bearer __SOURCE_TOKEN__"
     compression: gzip
 
   otlphttp/traces:
-    endpoint: "__INGESTION_URL__/otel"
+    endpoint: "__INGESTION_URL__/v1/ingest/otlp"
     headers:
       Authorization: "Bearer __SOURCE_TOKEN__"
     compression: gzip

@@ -1,0 +1,111 @@
+# Mihari Vector Configuration - MinIO
+# Collects MinIO JSON logs, built-in Prometheus metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the "message" field (or error.message) of the JSON entry
+#   level     - the MinIO level field, normalised
+#   timestamp - event time. Never renamed; overwritten from the entry's
+#               "time" field when parseable.
+#   service   - always "minio"
+#   host      - machine hostname
+# Any other top-level key (api, bucket, s3_object, request_id, ...) is stored
+# as a searchable string attribute.
+#
+# Metrics: scrapes MinIO's built-in Prometheus endpoint
+# (set MINIO_PROMETHEUS_AUTH_TYPE=public, or add a bearer token here).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_minio_logs:
+    type: file
+    include:
+      - "/var/log/minio/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_minio_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9000/minio/v2/metrics/cluster"
+      # bucket metrics (minio_bucket_usage_total_bytes) live on their own path
+      - "http://127.0.0.1:9000/minio/v2/metrics/bucket"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_minio_parser:
+    type: remap
+    inputs: [mihari_minio_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "minio"
+      .host = get_hostname!()
+      # MinIO JSON log:
+      # {"level":"ERROR","errKind":"...","time":"...","api":{"name":"PutObject","bucket":"...","object":"..."},"error":{"message":"..."}}
+      parsed, err = parse_json(string(.message) ?? "")
+      parsed = object(parsed) ?? {}
+      if err == null && length(parsed) > 0 {
+        lvl = downcase(string(parsed.level) ?? "info")
+        if lvl == "warning" { lvl = "warn" }
+        .level = lvl
+        msg = string(parsed.message) ?? (string(parsed.error.message) ?? "")
+        if msg != "" { .message = msg }
+        api = string(parsed.api.name) ?? ""
+        if api != "" { .api = api }
+        bucket = string(parsed.api.bucket) ?? ""
+        if bucket != "" { .bucket = bucket }
+        obj = string(parsed.api.object) ?? ""
+        if obj != "" { .s3_object = obj }
+        rid = string(parsed.requestID) ?? ""
+        if rid != "" { .request_id = rid }
+        ts = string(parsed.time) ?? ""
+        if ts != "" { .timestamp = parse_timestamp(ts, format: "%+") ?? .timestamp }
+      } else {
+        # Plaintext console lines pass through with a keyword-sniffed level
+        lvl = "info"
+        level_parsed, level_err = parse_regex(string(.message) ?? "", r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|FATAL)\b')
+        if level_err == null {
+          lvl = downcase(string(level_parsed.level) ?? "info")
+          if lvl == "warning" { lvl = "warn" }
+        }
+        .level = lvl
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_minio_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_minio_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

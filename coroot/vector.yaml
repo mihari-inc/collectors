@@ -3,7 +3,7 @@
 # transforms container names, and ships to Mihari API.
 #
 # Environment variables (required):
-#   INGESTION_URL  — Mihari instance URL (e.g., https://app.mihari.io)
+#   INGESTION_URL  — Mihari instance URL (e.g., https://platform.mihari.io)
 #   SOURCE_TOKEN   — Bearer token for authentication
 
 api:
@@ -60,7 +60,7 @@ sinks:
     type: prometheus_remote_write
     inputs:
       - metrics_enriched
-    endpoint: "${INGESTION_URL}/api/prom/v1/write"
+    endpoint: "${INGESTION_URL}/v1/ingest/prometheus"
     auth:
       strategy: "bearer"
       token: "${SOURCE_TOKEN}"
@@ -71,7 +71,7 @@ sinks:
     type: http
     inputs:
       - traces_enriched
-    uri: "${INGESTION_URL}/api/otel/v1/traces"
+    uri: "${INGESTION_URL}/v1/ingest/otlp/v1/traces"
     method: post
     encoding:
       codec: json

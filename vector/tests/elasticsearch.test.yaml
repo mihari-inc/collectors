@@ -1,0 +1,65 @@
+# Vector unit tests for configs/elasticsearch.yaml (run via tests/run.sh)
+tests:
+  - name: elasticsearch 8.x ECS JSON server log
+    inputs:
+      - insert_at: mihari_elasticsearch_parser
+        type: log
+        log_fields:
+          message: '{"@timestamp":"2026-06-01T12:00:00.123Z","log.level":"ERROR","log.logger":"o.e.c.c.Coordinator","elasticsearch.cluster.name":"prod-cluster","elasticsearch.node.name":"es-node-1","message":"master not discovered yet, this node has not previously joined a bootstrapped cluster"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_elasticsearch_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "elasticsearch")
+              assert_eq!(.level, "error")
+              assert_eq!(.message, "master not discovered yet, this node has not previously joined a bootstrapped cluster")
+              assert_eq!(.component, "o.e.c.c.Coordinator")
+              assert_eq!(.cluster, "prod-cluster")
+              assert_eq!(.es_node, "es-node-1")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the entry's @timestamp must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.3f"), "2026-06-01T12:00:00.123")
+
+  - name: elasticsearch 7.x JSON server log (comma millis)
+    inputs:
+      - insert_at: mihari_elasticsearch_parser
+        type: log
+        log_fields:
+          message: '{"type":"server","timestamp":"2026-06-01T12:00:01,456Z","level":"WARN","component":"o.e.m.j.JvmGcMonitorService","cluster.name":"prod-cluster","node.name":"es-node-2","message":"[gc][12345] overhead, spent [600ms] collecting in the last [1s]"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_elasticsearch_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "elasticsearch")
+              assert_eq!(.level, "warn")
+              assert_eq!(.message, "[gc][12345] overhead, spent [600ms] collecting in the last [1s]")
+              assert_eq!(.component, "o.e.m.j.JvmGcMonitorService")
+              assert_eq!(.cluster, "prod-cluster")
+              assert_eq!(.es_node, "es-node-2")
+              # comma-millis timestamp must still be promoted
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.3f"), "2026-06-01T12:00:01.456")
+
+  - name: elasticsearch plaintext fallback line
+    inputs:
+      - insert_at: mihari_elasticsearch_parser
+        type: log
+        log_fields:
+          message: "[2026-06-11T08:00:00,123][INFO ][o.e.n.Node               ] [es-node-3] initialized"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_elasticsearch_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "elasticsearch")
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "initialized")
+              assert_eq!(.component, "o.e.n.Node")
+              assert_eq!(.es_node, "es-node-3")
+              # the plaintext branch never touches .timestamp (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

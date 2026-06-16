@@ -9,7 +9,7 @@
 #   2. docker compose -f docker-compose.yaml up -d
 #
 # Variables:
-#   __INGESTION_URL__ — Your Mihari instance URL (e.g., https://app.mihari.io)
+#   __INGESTION_URL__ — Your Mihari instance URL (e.g., https://platform.mihari.io)
 #   __SOURCE_TOKEN__  — Bearer token for authentication
 
 services:

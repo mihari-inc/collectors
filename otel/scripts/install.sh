@@ -244,19 +244,19 @@ extensions:
 
 exporters:
   otlphttp/logs:
-    endpoint: "${INGESTION_URL}/otel"
+    endpoint: "${INGESTION_URL}/v1/ingest/otlp"
     headers:
       Authorization: "Bearer ${SOURCE_TOKEN}"
     compression: gzip
 
   otlphttp/metrics:
-    endpoint: "${INGESTION_URL}/otel"
+    endpoint: "${INGESTION_URL}/v1/ingest/otlp"
     headers:
       Authorization: "Bearer ${SOURCE_TOKEN}"
     compression: gzip
 
   otlphttp/traces:
-    endpoint: "${INGESTION_URL}/otel"
+    endpoint: "${INGESTION_URL}/v1/ingest/otlp"
     headers:
       Authorization: "Bearer ${SOURCE_TOKEN}"
     compression: gzip

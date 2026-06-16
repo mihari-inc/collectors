@@ -4,6 +4,16 @@
 # Variables (replaced by setup script):
 #   __INGESTION_URL__ - Your Mihari instance URL
 #   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the container log line
+#   level     - trace|debug|info|warn|error|fatal (keyword sniffed from the
+#               message, defaults to info)
+#   timestamp - event time as reported by the Docker daemon. Never renamed.
+#   service   - always "docker"
+#   host      - machine hostname
+# Any other top-level key (container_name, container_id, image, stream,
+# labels, ...) is stored as a searchable string attribute.
 
 api:
   enabled: true
@@ -32,36 +42,29 @@ transforms:
     inputs: [mihari_docker_logs]
     source: |
       del(.source_type)
-      .dt = del(.timestamp)
-      .level = "info"
-      # Try to extract level from log message
-      level_parsed, level_err = parse_regex(.message, r'(?i)\b(?P<level>ERROR|WARN|WARNING|INFO|DEBUG|CRITICAL|FATAL)\b')
-      if level_err == null {
-        .level = downcase!(level_parsed.level)
-      }
+      del(.container_created_at)
       .service = "docker"
       .host = get_hostname!()
-      # Flatten Docker metadata to top level
-      .image = del(.image)
-      .stream = del(.stream)
-      .label = del(.label)
-
-  mihari_metrics_to_logs:
-    type: metric_to_log
-    inputs: [mihari_host_metrics]
-
-  mihari_metrics_formatter:
-    type: remap
-    inputs: [mihari_metrics_to_logs]
-    source: |
-      del(.source_type)
-      .dt = del(.timestamp)
+      # container_name / container_id / image / stream stay top-level and
+      # become searchable attributes
+      lvl = "info"
+      level_parsed, level_err = parse_regex(string(.message) ?? "", r'(?i)\b(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL)\b')
+      if level_err == null {
+        lvl = downcase(string(level_parsed.level) ?? "info")
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "critical" { lvl = "error" }
+      }
+      .level = lvl
+      if exists(.label) {
+        .labels = encode_json(object(.label) ?? {})
+        del(.label)
+      }
 
 sinks:
   mihari_logs_sink:
     type: http
     inputs: [mihari_docker_parser]
-    uri: "__INGESTION_URL__/api/v1/ingest/logs"
+    uri: "__INGESTION_URL__/v1/ingest/vector"
     method: post
     encoding:
       codec: json
@@ -74,13 +77,9 @@ sinks:
       timeout_secs: 1
 
   mihari_metrics_sink:
-    type: http
-    inputs: [mihari_metrics_formatter]
-    uri: "__INGESTION_URL__/api/v1/ingest/metrics"
-    method: post
-    encoding:
-      codec: json
-    compression: gzip
+    type: prometheus_remote_write
+    inputs: [mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
     auth:
       strategy: bearer
       token: "__SOURCE_TOKEN__"

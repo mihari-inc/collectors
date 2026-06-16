@@ -1,0 +1,80 @@
+# Vector unit tests for configs/docker.yaml (run via tests/run.sh)
+tests:
+  - name: docker stdout line with info keyword
+    inputs:
+      - insert_at: mihari_docker_parser
+        type: log
+        log_fields:
+          message: "2026-06-01T12:00:00Z INFO server listening on :8080"
+          timestamp: "2026-06-11T07:00:00Z"
+          stream: stdout
+          container_name: web-1
+          container_id: abc123def4567890
+          image: "nginx:1.27"
+          container_created_at: "2026-06-01T00:00:00Z"
+          label."com.docker.compose.service": web
+          label."com.docker.compose.project": shop
+    outputs:
+      - extract_from: mihari_docker_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "docker")
+              assert_eq!(.level, "info")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              assert!(contains(to_string(.message) ?? "", "server listening"), "message must pass through untouched")
+              # container metadata stays top-level as searchable attributes
+              assert_eq!(.container_name, "web-1")
+              assert_eq!(.container_id, "abc123def4567890")
+              assert_eq!(.image, "nginx:1.27")
+              assert_eq!(.stream, "stdout")
+              # .label map is JSON-encoded into .labels
+              assert!(contains(to_string(.labels) ?? "", "com.docker.compose.service"), "labels must contain the compose service key")
+              assert!(!exists(.label), "raw label map must be dropped")
+              assert!(!exists(.container_created_at), "container_created_at must be dropped")
+              # .timestamp must be preserved untouched (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")
+
+  - name: docker stderr line with error keyword
+    inputs:
+      - insert_at: mihari_docker_parser
+        type: log
+        log_fields:
+          message: "ERROR failed to connect to db: dial tcp 10.0.0.5:5432: connection refused"
+          timestamp: "2026-06-11T07:00:01Z"
+          stream: stderr
+          container_name: api-1
+          container_id: fedcba9876543210
+          image: "registry.example.com/api:2.1.0"
+    outputs:
+      - extract_from: mihari_docker_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "docker")
+              assert_eq!(.level, "error")
+              assert_eq!(.stream, "stderr")
+              assert_eq!(.container_name, "api-1")
+              assert!(!exists(.labels), "labels must be absent without a label map")
+              assert_eq!(.timestamp, "2026-06-11T07:00:01Z")
+
+  - name: docker stderr line without level keyword defaults to info
+    inputs:
+      - insert_at: mihari_docker_parser
+        type: log
+        log_fields:
+          message: "yarn run v1.22.19"
+          timestamp: "2026-06-11T07:00:02Z"
+          stream: stderr
+          container_name: builder-1
+    outputs:
+      - extract_from: mihari_docker_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "docker")
+              # docker contract: level defaults to info when no keyword matches
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "yarn run v1.22.19")
+              assert_eq!(.timestamp, "2026-06-11T07:00:02Z")

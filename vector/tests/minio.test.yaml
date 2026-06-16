@@ -1,0 +1,62 @@
+# Vector unit tests for configs/minio.yaml (run via tests/run.sh)
+tests:
+  - name: minio JSON error log with api context
+    inputs:
+      - insert_at: mihari_minio_parser
+        type: log
+        log_fields:
+          message: '{"level":"ERROR","errKind":"ALL","time":"2026-06-01T12:00:00.000Z","api":{"name":"PutObject","bucket":"backups","object":"db-2026-06-01.tar.gz"},"requestID":"17D5C8A0939BBA34","error":{"message":"disk path full: /data1"}}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_minio_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "minio")
+              assert_eq!(.level, "error")
+              assert_eq!(.message, "disk path full: /data1")
+              assert_eq!(.api, "PutObject")
+              assert_eq!(.bucket, "backups")
+              assert_eq!(.s3_object, "db-2026-06-01.tar.gz")
+              assert_eq!(.request_id, "17D5C8A0939BBA34")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the entry's time field must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:00")
+
+  - name: minio JSON info log with top-level message
+    inputs:
+      - insert_at: mihari_minio_parser
+        type: log
+        log_fields:
+          message: '{"level":"INFO","time":"2026-06-01T12:00:01.000Z","message":"S3 API listening on :9000"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_minio_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "minio")
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "S3 API listening on :9000")
+              assert!(!exists(.api), "api must be absent without api context")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:01")
+
+  - name: minio plaintext console line keeps message and timestamp
+    inputs:
+      - insert_at: mihari_minio_parser
+        type: log
+        log_fields:
+          message: "WARNING: Detected default credentials 'minioadmin:minioadmin', we recommend that you change these values"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_minio_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "minio")
+              # keyword-sniffed level: WARNING -> warn
+              assert_eq!(.level, "warn")
+              assert!(contains(to_string(.message) ?? "", "default credentials"), "raw message must be kept")
+              # plaintext branch never touches .timestamp (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

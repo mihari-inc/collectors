@@ -6,7 +6,7 @@
 # Usage:
 #   curl -fsSL https://YOUR_HOST/setup-coroot/SOURCE_TOKEN | bash
 # Or:
-#   INGESTION_URL=https://app.mihari.io SOURCE_TOKEN=xxx bash install.sh
+#   INGESTION_URL=https://platform.mihari.io SOURCE_TOKEN=xxx bash install.sh
 #
 
 set -euo pipefail
@@ -40,7 +40,7 @@ validate_config() {
         errors=$((errors + 1))
     fi
     if [[ $errors -gt 0 ]]; then
-        echo "Usage: INGESTION_URL=https://app.mihari.io SOURCE_TOKEN=your_token bash install.sh"
+        echo "Usage: INGESTION_URL=https://platform.mihari.io SOURCE_TOKEN=your_token bash install.sh"
         exit 1
     fi
 }
@@ -208,7 +208,7 @@ sinks:
   mihari_metrics:
     type: prometheus_remote_write
     inputs: ["metrics_enriched"]
-    endpoint: "${INGESTION_URL}/api/prom/v1/write"
+    endpoint: "${INGESTION_URL}/v1/ingest/prometheus"
     auth:
       strategy: "bearer"
       token: "${SOURCE_TOKEN}"
@@ -218,7 +218,7 @@ sinks:
   mihari_traces:
     type: http
     inputs: ["traces_enriched"]
-    uri: "${INGESTION_URL}/api/otel/v1/traces"
+    uri: "${INGESTION_URL}/v1/ingest/otlp/v1/traces"
     method: post
     encoding:
       codec: json

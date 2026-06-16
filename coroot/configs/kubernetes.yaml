@@ -68,7 +68,7 @@ data:
       mihari_metrics:
         type: prometheus_remote_write
         inputs: ["metrics_enriched"]
-        endpoint: "${INGESTION_URL}/api/prom/v1/write"
+        endpoint: "${INGESTION_URL}/v1/ingest/prometheus"
         auth:
           strategy: "bearer"
           token: "${SOURCE_TOKEN}"
@@ -78,7 +78,7 @@ data:
       mihari_traces:
         type: http
         inputs: ["traces_enriched"]
-        uri: "${INGESTION_URL}/api/otel/v1/traces"
+        uri: "${INGESTION_URL}/v1/ingest/otlp/v1/traces"
         method: post
         encoding:
           codec: json

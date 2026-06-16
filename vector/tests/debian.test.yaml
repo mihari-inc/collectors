@@ -1,0 +1,112 @@
+# Vector unit tests for configs/debian.yaml (run via tests/run.sh)
+#
+# The primary source is journald, so fixtures carry journald fields
+# (PRIORITY, SYSLOG_IDENTIFIER, _PID, _COMM, _SYSTEMD_UNIT, _HOSTNAME).
+# The last test exercises the classic syslog file-line fallback branch.
+tests:
+  - name: debian journald sshd auth failure
+    inputs:
+      - insert_at: mihari_debian_parser
+        type: log
+        log_fields:
+          message: "Failed password for invalid user admin from 203.0.113.7 port 49812 ssh2"
+          timestamp: "2026-06-11T07:00:00Z"
+          host: debian-host
+          PRIORITY: "5"
+          SYSLOG_IDENTIFIER: sshd
+          _PID: "1042"
+          _COMM: sshd
+          _SYSTEMD_UNIT: ssh.service
+    outputs:
+      - extract_from: mihari_debian_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "sshd")
+              assert_eq!(.host, "debian-host")
+              # PRIORITY 5 (notice) maps to info
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "Failed password for invalid user admin from 203.0.113.7 port 49812 ssh2")
+              assert_eq!(.pid, "1042")
+              assert_eq!(.process, "sshd")
+              assert_eq!(.systemd_unit, "ssh.service")
+              # noisy journal fields must be dropped
+              assert!(!exists(.PRIORITY), "PRIORITY must be dropped")
+              assert!(!exists(.SYSLOG_IDENTIFIER), "SYSLOG_IDENTIFIER must be dropped")
+              assert!(!exists(._SYSTEMD_UNIT), "_SYSTEMD_UNIT must be dropped")
+              # .timestamp must be preserved untouched (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")
+
+  - name: debian journald CRON job line
+    inputs:
+      - insert_at: mihari_debian_parser
+        type: log
+        log_fields:
+          message: "(root) CMD (   cd / && run-parts --report /etc/cron.hourly)"
+          timestamp: "2026-06-11T07:17:01Z"
+          host: debian-host
+          PRIORITY: "6"
+          SYSLOG_IDENTIFIER: CRON
+          _PID: "2210"
+          _COMM: cron
+          _SYSTEMD_UNIT: cron.service
+    outputs:
+      - extract_from: mihari_debian_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "CRON")
+              assert_eq!(.host, "debian-host")
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "(root) CMD (   cd / && run-parts --report /etc/cron.hourly)")
+              assert_eq!(.pid, "2210")
+              assert_eq!(.process, "cron")
+              assert_eq!(.systemd_unit, "cron.service")
+              assert_eq!(.timestamp, "2026-06-11T07:17:01Z")
+
+  - name: debian journald kernel error line
+    inputs:
+      - insert_at: mihari_debian_parser
+        type: log
+        log_fields:
+          message: "Out of memory: Killed process 1234 (java) total-vm:1048576kB, anon-rss:524288kB"
+          timestamp: "2026-06-11T07:30:00Z"
+          PRIORITY: "3"
+          SYSLOG_IDENTIFIER: kernel
+          _HOSTNAME: debian-host
+    outputs:
+      - extract_from: mihari_debian_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "kernel")
+              # no .host on the event: falls back to _HOSTNAME
+              assert_eq!(.host, "debian-host")
+              # PRIORITY 3 (err) maps to error
+              assert_eq!(.level, "error")
+              assert!(contains(to_string(.message) ?? "", "Out of memory"), "message must be kept")
+              assert!(!exists(.pid), "pid must be absent without _PID")
+              assert!(!exists(.process), "process must be absent without _COMM")
+              assert_eq!(.timestamp, "2026-06-11T07:30:00Z")
+
+  - name: debian classic syslog file line (non-journald fallback)
+    inputs:
+      - insert_at: mihari_debian_parser
+        type: log
+        log_fields:
+          message: "Jun 11 09:00:00 web-1 sshd[1042]: Accepted publickey for deploy from 198.51.100.3 port 51234 ssh2"
+          timestamp: "2026-06-11T07:45:00Z"
+    outputs:
+      - extract_from: mihari_debian_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "sshd")
+              assert_eq!(.host, "web-1")
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "Accepted publickey for deploy from 198.51.100.3 port 51234 ssh2")
+              assert_eq!(.pid, "1042")
+              # the in-line syslog timestamp is promoted (year inferred)
+              assert_eq!(format_timestamp!(.timestamp, format: "%m-%dT%H:%M:%S"), "06-11T09:00:00")
+              assert!(!exists(.dt), "dt must not exist")

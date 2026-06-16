@@ -3,7 +3,7 @@
 # Mihari Collector — Standalone Docker run (two containers)
 #
 # Usage:
-#   INGESTION_URL=https://app.mihari.io SOURCE_TOKEN=xxx bash docker-run.sh
+#   INGESTION_URL=https://platform.mihari.io SOURCE_TOKEN=xxx bash docker-run.sh
 #
 
 set -euo pipefail

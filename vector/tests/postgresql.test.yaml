@@ -1,0 +1,63 @@
+# Vector unit tests for configs/postgresql.yaml (run via tests/run.sh)
+tests:
+  - name: postgresql error line with user@database
+    inputs:
+      - insert_at: mihari_postgresql_parser
+        type: log
+        log_fields:
+          message: '2026-06-01 10:00:00.123 UTC [123] alice@shop ERROR:  duplicate key value violates unique constraint "users_pkey"'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_postgresql_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "postgresql")
+              assert_eq!(.level, "error")
+              assert_eq!(.message, "duplicate key value violates unique constraint \"users_pkey\"")
+              assert_eq!(.pid, "123")
+              assert_eq!(.db_user, "alice")
+              assert_eq!(.db_database, "shop")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the in-line UTC timestamp must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.3f"), "2026-06-01T10:00:00.123")
+
+  - name: postgresql LOG line without user@database
+    inputs:
+      - insert_at: mihari_postgresql_parser
+        type: log
+        log_fields:
+          message: "2026-06-01 10:00:01.000 UTC [99] LOG:  checkpoint starting: time"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_postgresql_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "postgresql")
+              assert_eq!(.level, "info")
+              assert_eq!(.message, "checkpoint starting: time")
+              assert_eq!(.pid, "99")
+              assert!(!exists(.db_user), "db_user must be absent")
+              assert!(!exists(.db_database), "db_database must be absent")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T10:00:01")
+
+  - name: postgresql unparseable continuation line keeps message and timestamp
+    inputs:
+      - insert_at: mihari_postgresql_parser
+        type: log
+        log_fields:
+          message: "\tDETAIL:  Key (id)=(42) already exists."
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_postgresql_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "postgresql")
+              assert_eq!(.level, "info")
+              assert!(contains(to_string(.message) ?? "", "already exists"), "raw message must be kept")
+              # .timestamp must be preserved untouched (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

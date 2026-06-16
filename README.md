@@ -20,6 +20,44 @@ Supports **Vector** and **OpenTelemetry Collector** with pre-built configuration
 | HAProxy       | ✅     | ✅            | ✅   |
 | MinIO         | ✅     | ✅            | ✅   |
 | Docker        | ✅     | ✅            | ✅   |
+| Debian/Ubuntu host | ✅ | —            | —    |
+
+## Log Event Contract
+
+The Vector configs emit log events the Mihari ingest API (`/v1/ingest/vector`)
+reads from **top-level** fields only:
+
+| Field | Accepted keys | Notes |
+|-------|---------------|-------|
+| timestamp | `timestamp`, `@timestamp`, `time`, `ts` | ISO string or epoch s/ms. Never rename it (`dt` is ignored → row gets ingest time). |
+| level | `level`, `severity`, `status` | normalised to trace/debug/info/warn/error/fatal |
+| message | `message`, `msg`, `body` | |
+| service | `service`, `service_name`, `source_type` | drives dashboard filters — always set it |
+| host | `host`, `hostname` | |
+| env | `env` | |
+| trace/span | `trace_id`, `span_id` | hex |
+
+Every other top-level field is stored as a string attribute (objects are
+JSON-encoded), queryable as `attributes['key']`. Don't wrap parsed fields in a
+nested object — keep them top-level.
+
+Metrics go through Vector's native `prometheus_remote_write` sink to
+`/v1/ingest/prometheus`.
+
+## Testing
+
+```bash
+# Unit-test every Vector config's parsing transform (requires docker + python3):
+./vector/tests/run.sh              # all technologies
+./vector/tests/run.sh nginx debian # a subset
+
+# End-to-end ingest smoke test against a running Mihari instance:
+INGESTION_URL=http://localhost:3000 TOKEN=<source-ingest-token> ./tests/ingest-smoke.sh
+```
+
+`run.sh` substitutes the placeholders, extracts the transforms (sources like
+`kubernetes_logs`/`journald`/`host_metrics` can't be built outside their native
+environment) and runs `vector test` with the fixtures in `vector/tests/*.test.yaml`.
 
 ## Quick Start
 
@@ -77,11 +115,11 @@ The collectors send data to:
 
 | Data Type | Endpoint                  | Format    |
 |-----------|---------------------------|-----------|
-| Logs      | `POST /v1/ingest/logs`    | JSON/NDJSON |
-| Metrics   | `POST /v1/ingest/metrics` | JSON      |
-| Traces    | `POST /otel/v1/traces`    | OTLP JSON |
-| OTLP Logs | `POST /otel/v1/logs`      | OTLP JSON |
-| OTLP Metrics | `POST /otel/v1/metrics` | OTLP JSON |
+| Logs      | `POST /v1/ingest/vector`    | JSON/NDJSON |
+| Metrics   | `POST /v1/ingest/prometheus` | JSON      |
+| Traces    | `POST /v1/ingest/otlp/v1/traces`    | OTLP JSON |
+| OTLP Logs | `POST /v1/ingest/otlp/v1/logs`      | OTLP JSON |
+| OTLP Metrics | `POST /v1/ingest/otlp/v1/metrics` | OTLP JSON |
 
 Authentication: `Authorization: Bearer <SOURCE_TOKEN>`
 

@@ -1,0 +1,136 @@
+# Mihari Vector Configuration - Debian/Ubuntu (generic Linux host)
+# Collects system logs (journald) and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the log body (syslog header stripped when present)
+#   level     - from the syslog severity / journald PRIORITY
+#               (0-1=fatal, 2-3=error, 4=warn, 5-6=info, 7=debug)
+#   timestamp - event time. Never renamed; for classic syslog file lines the
+#               in-line timestamp is promoted (year inferred).
+#   service   - the syslog appname / journald SYSLOG_IDENTIFIER
+#               (sshd, cron, kernel, ...), falling back to "debian"
+#   host      - machine hostname
+# Any other top-level key (pid, facility, systemd_unit, process, ...) is
+# stored as a searchable string attribute.
+#
+# Source choice: journald is the primary source. On systemd hosts journald
+# already contains everything rsyslog writes to /var/log/{syslog,auth.log,
+# kern.log}, so tailing those files AS WELL would double-ingest every line.
+# For non-systemd hosts (or containers without journald), comment out the
+# journald source, uncomment the file source below and add it to the parser
+# transform's inputs. The parser handles both shapes.
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_debian_journald:
+    type: journald
+
+  # Alternative for hosts WITHOUT systemd/journald - uncomment this source,
+  # comment out mihari_debian_journald above, and switch the parser inputs to
+  # [mihari_debian_syslog_files]:
+  # mihari_debian_syslog_files:
+  #   type: file
+  #   include:
+  #     - "/var/log/syslog"
+  #     - "/var/log/auth.log"
+  #     - "/var/log/kern.log"
+  #   read_from: beginning
+  #   ignore_older_secs: 600
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_debian_parser:
+    type: remap
+    inputs: [mihari_debian_journald]
+    source: |
+      if exists(.PRIORITY) || exists(.SYSLOG_IDENTIFIER) || exists(._SYSTEMD_UNIT) {
+        # journald event: message is already clean; use journal metadata and
+        # drop the (very noisy) underscore-prefixed journal fields.
+        pri = to_int(.PRIORITY) ?? 6
+        lvl = "info"
+        if pri >= 7 { lvl = "debug" }
+        if pri == 4 { lvl = "warn" }
+        if pri == 2 || pri == 3 { lvl = "error" }
+        if pri <= 1 { lvl = "fatal" }
+        out = {
+          "message": string(.message) ?? "",
+          "timestamp": .timestamp,
+          "level": lvl,
+          "service": string(.SYSLOG_IDENTIFIER) ?? "debian",
+          "host": string(.host) ?? (string(._HOSTNAME) ?? get_hostname!())
+        }
+        if exists(._SYSTEMD_UNIT) { out.systemd_unit = string(._SYSTEMD_UNIT) ?? "" }
+        if exists(._PID) { out.pid = string(._PID) ?? "" }
+        if exists(._COMM) { out.process = string(._COMM) ?? "" }
+        . = out
+      } else {
+        # Classic syslog file line: "Jun 11 09:00:00 host app[pid]: message"
+        parsed, err = parse_syslog(string(.message) ?? "")
+        if err == null {
+          lvl = string(parsed.severity) ?? "info"
+          if lvl == "err" { lvl = "error" }
+          if lvl == "warning" { lvl = "warn" }
+          if lvl == "notice" { lvl = "info" }
+          if lvl == "crit" || lvl == "alert" { lvl = "error" }
+          if lvl == "emerg" { lvl = "fatal" }
+          # parse_syslog yields a real timestamp; field access returns null (not
+          # an error) when absent, so fall back on null explicitly.
+          ts = .timestamp
+          if parsed.timestamp != null { ts = parsed.timestamp }
+          out = {
+            "message": string(parsed.message) ?? (string(.message) ?? ""),
+            "timestamp": ts,
+            "level": lvl,
+            "service": string(parsed.appname) ?? "debian",
+            "host": string(parsed.hostname) ?? (string(.host) ?? get_hostname!())
+          }
+          # procid is an integer in parse_syslog output - convert, don't assert.
+          if parsed.procid != null { out.pid = to_string!(parsed.procid) }
+          if parsed.facility != null { out.facility = to_string!(parsed.facility) }
+          . = out
+        } else {
+          del(.source_type)
+          del(.file)
+          .service = "debian"
+          .host = get_hostname!()
+          .level = "info"
+        }
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_debian_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

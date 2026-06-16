@@ -1,0 +1,90 @@
+# Vector unit tests for configs/kubernetes.yaml (run via tests/run.sh)
+tests:
+  - name: kubernetes pod log with app label and error keyword
+    inputs:
+      - insert_at: mihari_kubernetes_parser
+        type: log
+        log_fields:
+          message: "2026-06-01T12:00:00Z ERROR failed to charge card: connection refused"
+          timestamp: "2026-06-11T07:00:00Z"
+          stream: stdout
+          kubernetes.pod_name: checkout-7d9fbbd95-x2lqp
+          kubernetes.pod_namespace: shop
+          kubernetes.container_name: app
+          kubernetes.pod_node_name: node-a
+          kubernetes.container_image: "registry.example.com/checkout:1.4.2"
+          kubernetes.pod_labels."app.kubernetes.io/name": checkout
+          kubernetes.pod_labels.team: payments
+    outputs:
+      - extract_from: mihari_kubernetes_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "checkout")
+              assert_eq!(.host, "node-a")
+              assert_eq!(.level, "error")
+              assert_eq!(.k8s_namespace, "shop")
+              assert_eq!(.k8s_pod, "checkout-7d9fbbd95-x2lqp")
+              assert_eq!(.k8s_container, "app")
+              assert_eq!(.k8s_node, "node-a")
+              assert_eq!(.k8s_image, "registry.example.com/checkout:1.4.2")
+              assert!(contains(to_string(.k8s_labels) ?? "", "app.kubernetes.io/name"), "k8s_labels must contain the app label key")
+              assert!(contains(to_string(.k8s_labels) ?? "", "payments"), "k8s_labels must contain the team label value")
+              assert!(!exists(.kubernetes), "raw kubernetes metadata must be dropped")
+              assert_eq!(.stream, "stdout")
+              assert!(contains(to_string(.message) ?? "", "failed to charge card"), "message must pass through untouched")
+              # .timestamp must be preserved untouched (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")
+
+  - name: kubernetes stderr line without level keyword defaults to error
+    inputs:
+      - insert_at: mihari_kubernetes_parser
+        type: log
+        log_fields:
+          message: "unhandled exception while processing job 42"
+          timestamp: "2026-06-11T07:00:01Z"
+          stream: stderr
+          kubernetes.pod_name: worker-5c6d8-abcde
+          kubernetes.pod_namespace: jobs
+          kubernetes.container_name: worker
+          kubernetes.pod_node_name: node-b
+    outputs:
+      - extract_from: mihari_kubernetes_parser
+        conditions:
+          - type: vrl
+            source: |
+              # No app.kubernetes.io/name label: service falls back to namespace/pod
+              assert_eq!(.service, "jobs/worker-5c6d8-abcde")
+              assert_eq!(.host, "node-b")
+              assert_eq!(.level, "error")
+              assert_eq!(.k8s_namespace, "jobs")
+              assert_eq!(.k8s_pod, "worker-5c6d8-abcde")
+              assert_eq!(.k8s_container, "worker")
+              assert!(!exists(.k8s_labels), "k8s_labels must be absent without pod labels")
+              assert!(!exists(.kubernetes), "raw kubernetes metadata must be dropped")
+              assert_eq!(.message, "unhandled exception while processing job 42")
+              assert_eq!(.timestamp, "2026-06-11T07:00:01Z")
+
+  - name: kubernetes stdout line without keyword defaults to info
+    inputs:
+      - insert_at: mihari_kubernetes_parser
+        type: log
+        log_fields:
+          message: "served request in 12ms"
+          timestamp: "2026-06-11T07:00:02Z"
+          stream: stdout
+          kubernetes.pod_name: api-1
+          kubernetes.pod_namespace: default
+          kubernetes.container_name: api
+    outputs:
+      - extract_from: mihari_kubernetes_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "default/api-1")
+              assert_eq!(.level, "info")
+              # No pod_node_name: host falls back to the machine hostname
+              assert!(is_string(.host) && .host != "", "host must be set")
+              assert!(!exists(.k8s_node), "k8s_node must be absent without a node name")
+              assert_eq!(.timestamp, "2026-06-11T07:00:02Z")

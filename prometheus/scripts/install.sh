@@ -269,7 +269,7 @@ scrape_configs:
       - targets: ["127.0.0.1:9100"]
 
 remote_write:
-  - url: "${INGESTION_URL}/api/v1/ingest/metrics"
+  - url: "${INGESTION_URL}/v1/ingest/prometheus"
     authorization:
       type: Bearer
       credentials: "${SOURCE_TOKEN}"
