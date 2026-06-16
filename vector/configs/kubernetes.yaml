@@ -1,0 +1,93 @@
+# Mihari Vector Configuration - Kubernetes
+# Auto-discovers pods and enriches with K8s metadata
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the container log line
+#   level     - trace|debug|info|warn|error|fatal (keyword sniffed from the
+#               message; stderr lines without a keyword default to error)
+#   timestamp - event time as reported by the container runtime. Never renamed.
+#   service   - pod label "app.kubernetes.io/name", falling back to
+#               "<namespace>/<pod>"
+#   host      - the node name running the pod
+# Any other top-level key (k8s_namespace, k8s_pod, k8s_container, k8s_node,
+# k8s_labels, stream, ...) is stored as a searchable string attribute.
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_kubernetes_logs:
+    type: kubernetes_logs
+    auto_partial_merge: true
+    self_node_name: "${VECTOR_SELF_NODE_NAME}"
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_kubernetes_parser:
+    type: remap
+    inputs: [mihari_kubernetes_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      namespace = string(.kubernetes.pod_namespace) ?? "unknown"
+      pod = string(.kubernetes.pod_name) ?? "unknown"
+      container = string(.kubernetes.container_name) ?? "unknown"
+      node = string(.kubernetes.pod_node_name) ?? ""
+      app_label = string(.kubernetes.pod_labels."app.kubernetes.io/name") ?? ""
+      .service = if app_label != "" { app_label } else { namespace + "/" + pod }
+      .host = if node != "" { node } else { get_hostname!() }
+      .k8s_namespace = namespace
+      .k8s_pod = pod
+      .k8s_container = container
+      if node != "" { .k8s_node = node }
+      if exists(.kubernetes.pod_labels) { .k8s_labels = encode_json(object(.kubernetes.pod_labels) ?? {}) }
+      if exists(.kubernetes.container_image) { .k8s_image = string(.kubernetes.container_image) ?? "" }
+      del(.kubernetes)
+      lvl = ""
+      level_parsed, level_err = parse_regex(string(.message) ?? "", r'(?i)\b(?P<level>TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|CRITICAL|FATAL|PANIC)\b')
+      if level_err == null {
+        lvl = downcase(string(level_parsed.level) ?? "info")
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "notice" { lvl = "info" }
+        if lvl == "critical" { lvl = "error" }
+        if lvl == "panic" { lvl = "fatal" }
+      }
+      if lvl == "" && .stream == "stderr" { lvl = "error" }
+      if lvl == "" { lvl = "info" }
+      .level = lvl
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_kubernetes_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

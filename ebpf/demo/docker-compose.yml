@@ -1,0 +1,188 @@
+# Mihari eBPF Demo — Multi-service infrastructure with OTEL auto-instrumentation
+#
+# Prerequisites: Mihari app running (cd app && docker compose up)
+#
+# Usage:
+#   cd collectors/ebpf/demo
+#   docker compose up --build
+#
+# Services topology:
+#   traffic → gateway → users    → redis
+#                     → orders   → postgres, users, notifications, payments
+#                     → payments → postgres, notifications
+#                     → notifications → redis
+#
+# View: http://localhost:3000/telemetry/services-map
+
+services:
+  # ── Init: seeds a known datasource token into Mihari ──
+  init-token:
+    image: postgres:16-alpine
+    container_name: ebpf-demo-init
+    entrypoint: ["sh", "/init-token.sh"]
+    volumes:
+      - ./init-token.sh:/init-token.sh:ro
+      - token_data:/tmp
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-mihari-uptime-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-mihari}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mihari_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mihari_uptime}
+    networks:
+      - default
+      - mihari
+
+  # ── Infrastructure for demo services ──
+  postgres-demo:
+    image: postgres:16-alpine
+    container_name: ebpf-demo-postgres
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ebpf-demo-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # ── Microservices (OTEL auto-instrumented) ──
+  gateway:
+    build: ./services
+    container_name: ebpf-demo-gateway
+    command: node gateway.js
+    ports:
+      - "4000:4000"
+    environment:
+      OTEL_SERVICE_NAME: api-gateway
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MIHARI_INGEST_URL:-http://mihari-uptime-api:3000}
+      MIHARI_SOURCE_TOKEN: ${MIHARI_SOURCE_TOKEN:-mih_demo_ebpf_000000000000000000000000000000000000}
+    depends_on:
+      init-token:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - mihari
+
+  users:
+    build: ./services
+    container_name: ebpf-demo-users
+    command: node users.js
+    environment:
+      OTEL_SERVICE_NAME: user-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MIHARI_INGEST_URL:-http://mihari-uptime-api:3000}
+      MIHARI_SOURCE_TOKEN: ${MIHARI_SOURCE_TOKEN:-mih_demo_ebpf_000000000000000000000000000000000000}
+    depends_on:
+      redis:
+        condition: service_healthy
+      init-token:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - mihari
+
+  orders:
+    build: ./services
+    container_name: ebpf-demo-orders
+    command: node orders.js
+    environment:
+      OTEL_SERVICE_NAME: order-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MIHARI_INGEST_URL:-http://mihari-uptime-api:3000}
+      MIHARI_SOURCE_TOKEN: ${MIHARI_SOURCE_TOKEN:-mih_demo_ebpf_000000000000000000000000000000000000}
+    depends_on:
+      postgres-demo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      init-token:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - mihari
+
+  notifications:
+    build: ./services
+    container_name: ebpf-demo-notifications
+    command: node notifications.js
+    environment:
+      OTEL_SERVICE_NAME: notification-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MIHARI_INGEST_URL:-http://mihari-uptime-api:3000}
+      MIHARI_SOURCE_TOKEN: ${MIHARI_SOURCE_TOKEN:-mih_demo_ebpf_000000000000000000000000000000000000}
+    depends_on:
+      redis:
+        condition: service_healthy
+      init-token:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - mihari
+
+  payments:
+    build: ./services
+    container_name: ebpf-demo-payments
+    command: node payments.js
+    environment:
+      OTEL_SERVICE_NAME: payment-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${MIHARI_INGEST_URL:-http://mihari-uptime-api:3000}
+      MIHARI_SOURCE_TOKEN: ${MIHARI_SOURCE_TOKEN:-mih_demo_ebpf_000000000000000000000000000000000000}
+    depends_on:
+      postgres-demo:
+        condition: service_healthy
+      init-token:
+        condition: service_completed_successfully
+    networks:
+      - default
+      - mihari
+
+  # ── Traffic generator ──
+  traffic:
+    build: ./services
+    container_name: ebpf-demo-traffic
+    command: node traffic.js
+    environment:
+      GATEWAY_URL: http://gateway:4000
+      TRAFFIC_INTERVAL_MS: "800"
+    depends_on:
+      - gateway
+      - users
+      - orders
+      - notifications
+      - payments
+
+  # ── Optional: Beyla eBPF agent (Linux only, needs privileged) ──
+  # Uncomment on Linux hosts to also capture kernel-level network traffic.
+  # On macOS/Docker Desktop, the OTEL auto-instrumentation above is sufficient.
+  #
+  # beyla:
+  #   image: grafana/beyla:1.8
+  #   container_name: ebpf-demo-beyla
+  #   privileged: true
+  #   pid: host
+  #   network_mode: host
+  #   volumes:
+  #     - /sys/kernel/debug:/sys/kernel/debug:rw
+  #     - /sys/kernel/tracing:/sys/kernel/tracing:rw
+  #     - /sys/fs/cgroup:/sys/fs/cgroup:ro
+  #     - ../beyla.yaml:/etc/beyla/beyla.yaml:ro
+  #   environment:
+  #     BEYLA_CONFIG_PATH: /etc/beyla/beyla.yaml
+  #     BEYLA_OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:3000/v1/ingest/otlp/v1/traces
+  #     OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer mih_demo_ebpf_000000000000000000000000000000000000"
+
+volumes:
+  token_data:
+
+networks:
+  default:
+  mihari:
+    name: app_default
+    external: true

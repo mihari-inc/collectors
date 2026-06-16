@@ -1,0 +1,102 @@
+# Mihari Vector Configuration - HAProxy
+# Collects HAProxy HTTP logs, built-in Prometheus metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the raw HAProxy log line (kept intact; the parser is not
+#               lossless so the original line stays searchable)
+#   level     - info (<400), warn (4xx), error (5xx) from the HTTP status
+#   timestamp - event time as read by Vector. Never renamed (the HAProxy
+#               accept-date carries no UTC offset, so it is not promoted).
+#   service   - always "haproxy"
+#   host      - machine hostname
+# Any other top-level key (http_status, frontend, backend, backend_server,
+# client_ip, duration_ms, termination_state, ...) is stored as a searchable
+# string attribute. duration_ms is HAProxy's Tt/Ta total time in ms.
+#
+# Metrics: scrapes HAProxy's built-in Prometheus endpoint on port 8405
+# (HAProxy 2.0+, enable with: "http-request use-service prometheus-exporter"
+# on a stats frontend bound to :8405).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_haproxy_logs:
+    type: file
+    include:
+      - "/var/log/haproxy.log"
+      - "/var/log/haproxy/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_haproxy_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:8405/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_haproxy_parser:
+    type: remap
+    inputs: [mihari_haproxy_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "haproxy"
+      .host = get_hostname!()
+      # HTTP log format (optionally behind a syslog prefix):
+      # client:port [accept_date] frontend backend/server TR/Tw/Tc/Tr/Ta status bytes - - tsc conns queues "METHOD /path HTTP/x.y"
+      parsed, err = parse_regex(.message, r'(?P<client_ip>[0-9a-fA-F.:]+):(?P<client_port>\d+) \[(?P<ts>[^\]]+)\] (?P<frontend>\S+) (?P<backend>[^\s/]+)/(?P<server>\S+) (?P<t_request>-?\d+)/(?P<t_queue>-?\d+)/(?P<t_connect>-?\d+)/(?P<t_response>-?\d+)/(?P<t_total>\+?\d+) (?P<status>-?\d+) (?P<bytes>\d+)(?: \S+ \S+ (?P<termination>\S+) \S+ \S+ "(?P<method>\S+) (?P<path>\S+)[^"]*")?')
+      if err == null {
+        status = to_int(parsed.status) ?? 0
+        .level = if status >= 500 { "error" } else if status >= 400 { "warn" } else { "info" }
+        .http_status = parsed.status
+        .frontend = parsed.frontend
+        .backend = parsed.backend
+        .backend_server = parsed.server
+        .client_ip = parsed.client_ip
+        .duration_ms = parsed.t_total
+        if parsed.termination != null { .termination_state = parsed.termination }
+        if parsed.method != null { .http_method = parsed.method }
+        if parsed.path != null { .http_path = parsed.path }
+      } else {
+        # Startup / TCP-mode / admin lines pass through unparsed
+        .level = "info"
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_haproxy_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_haproxy_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

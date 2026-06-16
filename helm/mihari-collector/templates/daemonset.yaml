@@ -1,0 +1,118 @@
+{{- if eq .Values.deploymentMode "daemonset" }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "mihari-collector.fullname" . }}
+  labels:
+    {{- include "mihari-collector.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "mihari-collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "mihari-collector.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "mihari-collector.serviceAccountName" . }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          image: {{ include "mihari-collector.image" . }}
+          imagePullPolicy: {{ include "mihari-collector.imagePullPolicy" . }}
+          {{- if eq .Values.collector "vector" }}
+          args:
+            - "--config"
+            - "/etc/vector/vector.yaml"
+          {{- else }}
+          args:
+            - "--config"
+            - "/etc/otelcol-contrib/config.yaml"
+          {{- end }}
+          env:
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: VECTOR_SELF_POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: VECTOR_SELF_POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- if eq .Values.collector "otel" }}
+            - name: otlp-grpc
+              containerPort: {{ .Values.otel.grpcPort }}
+              protocol: TCP
+            - name: otlp-http
+              containerPort: {{ .Values.otel.httpPort }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.otel.healthCheckPort }}
+              protocol: TCP
+            {{- else }}
+            - name: api
+              containerPort: 8686
+              protocol: TCP
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if eq .Values.collector "vector" }}
+            - name: config
+              mountPath: /etc/vector/vector.yaml
+              subPath: vector.yaml
+              readOnly: true
+            {{- else }}
+            - name: config
+              mountPath: /etc/otelcol-contrib/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- end }}
+            - name: var-log
+              mountPath: /var/log
+              readOnly: true
+            - name: var-lib-docker
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: var-log-pods
+              mountPath: /var/log/pods
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "mihari-collector.fullname" . }}-config
+        - name: var-log
+          hostPath:
+            path: /var/log
+        - name: var-lib-docker
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: var-log-pods
+          hostPath:
+            path: /var/log/pods
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

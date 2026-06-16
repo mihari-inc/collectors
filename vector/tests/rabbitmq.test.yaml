@@ -1,0 +1,77 @@
+# Vector unit tests for configs/rabbitmq.yaml (run via tests/run.sh)
+tests:
+  - name: rabbitmq error line
+    inputs:
+      - insert_at: mihari_rabbitmq_parser
+        type: log
+        log_fields:
+          message: "2026-06-01 12:00:00.000000+00:00 [error] <0.123.0> connection <0.124.0> (203.0.113.5:51234 -> 10.0.0.2:5672): missed heartbeats from client, timeout: 60s"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_rabbitmq_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "rabbitmq")
+              assert_eq!(.level, "error")
+              assert_eq!(.erlang_pid, "0.123.0")
+              assert_eq!(.message, "connection <0.124.0> (203.0.113.5:51234 -> 10.0.0.2:5672): missed heartbeats from client, timeout: 60s")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the in-line timestamp (with UTC offset) must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:00")
+
+  - name: rabbitmq warning line maps to warn
+    inputs:
+      - insert_at: mihari_rabbitmq_parser
+        type: log
+        log_fields:
+          message: "2026-06-01 12:00:01.500000+00:00 [warning] <0.222.0> memory resource limit alarm set on node rabbit@queue-1"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_rabbitmq_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "rabbitmq")
+              assert_eq!(.level, "warn")
+              assert_eq!(.erlang_pid, "0.222.0")
+              assert_eq!(.message, "memory resource limit alarm set on node rabbit@queue-1")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.3f"), "2026-06-01T12:00:01.500")
+
+  - name: rabbitmq info line
+    inputs:
+      - insert_at: mihari_rabbitmq_parser
+        type: log
+        log_fields:
+          message: "2026-06-01 12:00:02.000000+00:00 [info] <0.456.0> accepting AMQP connection <0.789.0> (10.0.0.9:43210 -> 10.0.0.2:5672)"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_rabbitmq_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "rabbitmq")
+              assert_eq!(.level, "info")
+              assert_eq!(.erlang_pid, "0.456.0")
+              assert!(contains(to_string(.message) ?? "", "accepting AMQP connection"), "prefix must be stripped")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:02")
+
+  - name: rabbitmq crash-report continuation line keeps message and timestamp
+    inputs:
+      - insert_at: mihari_rabbitmq_parser
+        type: log
+        log_fields:
+          message: "    crasher:"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_rabbitmq_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "rabbitmq")
+              assert_eq!(.level, "info")
+              assert!(contains(to_string(.message) ?? "", "crasher"), "raw message must be kept")
+              assert!(!exists(.erlang_pid), "erlang_pid must be absent")
+              # .timestamp must be preserved untouched (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

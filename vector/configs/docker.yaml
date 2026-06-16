@@ -1,0 +1,88 @@
+# Mihari Vector Configuration - Docker
+# Collects Docker container logs and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the container log line
+#   level     - trace|debug|info|warn|error|fatal (keyword sniffed from the
+#               message, defaults to info)
+#   timestamp - event time as reported by the Docker daemon. Never renamed.
+#   service   - always "docker"
+#   host      - machine hostname
+# Any other top-level key (container_name, container_id, image, stream,
+# labels, ...) is stored as a searchable string attribute.
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_docker_logs:
+    type: docker_logs
+    docker_host: "unix:///var/run/docker.sock"
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+    filesystem:
+      devices:
+        excludes: ["overlay*", "tmpfs", "nsfs"]
+      filesystems:
+        excludes: ["overlay", "tmpfs", "nsfs"]
+      mountpoints:
+        excludes: ["/var/lib/docker/*"]
+
+transforms:
+  mihari_docker_parser:
+    type: remap
+    inputs: [mihari_docker_logs]
+    source: |
+      del(.source_type)
+      del(.container_created_at)
+      .service = "docker"
+      .host = get_hostname!()
+      # container_name / container_id / image / stream stay top-level and
+      # become searchable attributes
+      lvl = "info"
+      level_parsed, level_err = parse_regex(string(.message) ?? "", r'(?i)\b(?P<level>TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL)\b')
+      if level_err == null {
+        lvl = downcase(string(level_parsed.level) ?? "info")
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "critical" { lvl = "error" }
+      }
+      .level = lvl
+      if exists(.label) {
+        .labels = encode_json(object(.label) ?? {})
+        del(.label)
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_docker_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

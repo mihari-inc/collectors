@@ -1,0 +1,133 @@
+# Mihari Vector Configuration - Apache HTTP Server
+# Collects Apache access/error logs, exporter metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the log line (error-log prefix stripped when parseable)
+#   level     - access log: info (<400), warn (4xx), error (5xx);
+#               error log: the Apache severity word, normalised
+#   timestamp - event time. Never renamed; overwritten from the access-log
+#               timestamp (which carries a UTC offset) when parseable.
+#   service   - always "apache"
+#   host      - machine hostname
+# Any other top-level key (http_method, http_path, http_status, client_ip,
+# module, pid, ...) is stored as a searchable string attribute.
+#
+# Metrics: scrapes apache_exporter on its default port 9117
+# (https://github.com/Lusitaniae/apache_exporter).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_apache_access_logs:
+    type: file
+    include:
+      - "/var/log/apache2/access.log"
+      - "/var/log/apache2/other_vhosts_access.log"
+      - "/var/log/httpd/access_log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_apache_error_logs:
+    type: file
+    include:
+      - "/var/log/apache2/error.log"
+      - "/var/log/httpd/error_log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_apache_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9117/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_apache_access_parser:
+    type: remap
+    inputs: [mihari_apache_access_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "apache"
+      .host = get_hostname!()
+      # Combined log format:
+      # %h %l %u %t "%r" %>s %b "%{Referer}i" "%{User-Agent}i"
+      parsed, err = parse_regex(.message, r'^(?P<client>\S+) \S+ (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+)(?: (?P<protocol>[^"]*))?" (?P<status>\d{3}) (?P<bytes>\d+|-)(?: "(?P<referer>[^"]*)" "(?P<agent>[^"]*)")?')
+      if err == null {
+        status = to_int(parsed.status) ?? 0
+        .level = if status >= 500 { "error" } else if status >= 400 { "warn" } else { "info" }
+        .http_method = parsed.method
+        .http_path = parsed.path
+        .http_status = parsed.status
+        .client_ip = parsed.client
+        if parsed.bytes != null && parsed.bytes != "-" { .bytes_sent = parsed.bytes }
+        if parsed.referer != null && parsed.referer != "-" { .http_referer = parsed.referer }
+        if parsed.agent != null && parsed.agent != "-" { .http_user_agent = parsed.agent }
+        .timestamp = parse_timestamp(string(parsed.ts) ?? "", format: "%d/%b/%Y:%H:%M:%S %z") ?? .timestamp
+      } else {
+        .level = "info"
+      }
+
+  mihari_apache_error_parser:
+    type: remap
+    inputs: [mihari_apache_error_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "apache"
+      .host = get_hostname!()
+      # Error log (2.4): [Day Mon DD HH:MM:SS.uuuuuu YYYY] [module:level] [pid N:tid N] [client IP] message
+      parsed, err = parse_regex(.message, r'^\[(?P<ts>[^\]]+)\] \[(?:(?P<module>[\w-]+):)?(?P<level>\w+)\] (?:\[pid (?P<pid>\d+)(?::tid \d+)?\] )?(?:\[client (?P<client>[^\]]+)\] )?(?P<msg>.*)')
+      if err == null {
+        lvl = downcase(string(parsed.level) ?? "error")
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "notice" { lvl = "info" }
+        if lvl == "crit" || lvl == "alert" { lvl = "error" }
+        if lvl == "emerg" { lvl = "fatal" }
+        if starts_with(lvl, "trace") { lvl = "trace" }
+        .level = lvl
+        if parsed.module != null { .module = parsed.module }
+        if parsed.pid != null { .pid = parsed.pid }
+        if parsed.client != null { .client_ip = parsed.client }
+        .message = string(parsed.msg) ?? .message
+      } else {
+        .level = "error"
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_apache_access_parser, mihari_apache_error_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_apache_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

@@ -1,0 +1,62 @@
+# Mihari Collector — Docker Swarm (global mode)
+# Two services per node: eBPF agent + Vector collector
+#
+# Variables:
+#   __INGESTION_URL__ — Your Mihari instance URL
+#   __SOURCE_TOKEN__  — Bearer token for authentication
+#
+# Usage:
+#   1. Replace __INGESTION_URL__ and __SOURCE_TOKEN__
+#   2. docker stack deploy -c docker-swarm.yaml mihari-collector
+
+version: "3.8"
+
+services:
+  coroot-node-agent:
+    image: ghcr.io/coroot/coroot-node-agent:latest
+    hostname: "{{.Node.Hostname}}"
+    privileged: true
+    pid: host
+    network_mode: host
+    command:
+      - "--cgroupfs-root=/host/sys/fs/cgroup"
+      - "--metrics-endpoint=http://127.0.0.1:39090"
+      - "--traces-endpoint=http://127.0.0.1:34318"
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+      - /sys/kernel/tracing:/sys/kernel/tracing:rw
+      - /sys/fs/cgroup:/host/sys/fs/cgroup:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+    environment:
+      - GOMEMLIMIT=512MiB
+
+  mihari-collector:
+    image: timberio/vector:0.47.0-distroless-libc
+    hostname: "{{.Node.Hostname}}"
+    network_mode: host
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+    environment:
+      - INGESTION_URL=__INGESTION_URL__
+      - SOURCE_TOKEN=__SOURCE_TOKEN__
+      - VECTOR_LOG=info

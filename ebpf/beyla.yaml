@@ -1,0 +1,79 @@
+# Mihari eBPF Collector — Grafana Beyla Configuration
+#
+# Beyla uses eBPF to auto-instrument HTTP, gRPC, SQL, and Redis traffic
+# without any code changes. It exports OTLP traces directly to Mihari.
+#
+# Environment variables:
+#   BEYLA_OTEL_EXPORTER_OTLP_ENDPOINT — Mihari OTLP endpoint
+#   OTEL_EXPORTER_OTLP_HEADERS       — "Authorization=Bearer <token>"
+
+log_level: info
+
+# Auto-discover all processes on the host
+discovery:
+  services:
+    - open_ports: 1-65535
+
+# eBPF instrumentation settings
+ebpf:
+  wakeup_len: 100
+  track_request_headers:
+    - "Content-Type"
+    - "X-Request-Id"
+    - "X-Trace-Id"
+
+# L7 protocol detection
+protocols:
+  http:
+    request_timeout: 30s
+  http2:
+    request_timeout: 30s
+  grpc:
+    request_timeout: 30s
+
+# Network-level metrics (TCP connections, DNS)
+network:
+  enable: true
+  cidrs:
+    - "10.0.0.0/8"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+
+# Attributes enrichment
+attributes:
+  kubernetes:
+    enable: auto
+  select:
+    # Enrich spans with service metadata
+    beyla_network_flow:
+      include:
+        - "k8s.src.owner.name"
+        - "k8s.dst.owner.name"
+        - "k8s.src.namespace"
+        - "k8s.dst.namespace"
+        - "src.name"
+        - "dst.name"
+        - "dst.port"
+        - "transport"
+        - "direction"
+
+# OTLP export to Mihari
+otel_traces_export:
+  endpoint: ${BEYLA_OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:3000/v1/ingest/otlp/v1/traces}
+  protocol: http/json
+  sampler:
+    name: always_on
+
+otel_metrics_export:
+  endpoint: ${BEYLA_OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:3000/v1/ingest/otlp/v1/metrics}
+  protocol: http/json
+  interval: 15s
+  features:
+    - application
+    - application_process
+    - network
+
+# Internal Prometheus metrics (for self-monitoring)
+prometheus_export:
+  port: 6060
+  path: /metrics

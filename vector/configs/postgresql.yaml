@@ -1,0 +1,101 @@
+# Mihari Vector Configuration - PostgreSQL
+# Collects PostgreSQL logs and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the log body (prefix stripped when the line matches the
+#               PostgreSQL stderr log format)
+#   level     - trace|debug|info|warn|error|fatal
+#   timestamp - event time. Never renamed; overwritten from the log line only
+#               when it carries an unambiguous UTC timestamp.
+#   service   - always "postgresql"
+#   host      - machine hostname
+# Any other top-level key (pid, db_user, db_database, ...) is stored as a
+# searchable string attribute.
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_postgresql_logs:
+    type: file
+    include:
+      - "/var/log/postgresql/*.log"
+      - "/var/lib/postgresql/*/main/log/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_postgresql_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9187/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_postgresql_parser:
+    type: remap
+    inputs: [mihari_postgresql_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "postgresql"
+      .host = get_hostname!()
+      # Default stderr log_line_prefix: '%m [%p] ' optionally followed by 'user@database '
+      parsed, err = parse_regex(.message, r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+ \w+) \[(?P<pid>\d+)\] (?:(?P<user>[^@\s]+)@(?P<database>\S+) )?(?P<level>[A-Z0-9]+):\s+(?P<msg>.*)')
+      if err == null {
+        lvl = downcase(string(parsed.level) ?? "info")
+        if lvl == "log" || lvl == "notice" || lvl == "detail" || lvl == "hint" || lvl == "statement" { lvl = "info" }
+        if lvl == "warning" { lvl = "warn" }
+        if starts_with(lvl, "debug") { lvl = "debug" }
+        if lvl == "panic" { lvl = "fatal" }
+        .level = lvl
+        .message = string(parsed.msg) ?? .message
+        .pid = parsed.pid
+        if parsed.user != null { .db_user = parsed.user }
+        if parsed.database != null { .db_database = parsed.database }
+        # Promote the in-line timestamp only for the unambiguous UTC case
+        ts = string(parsed.ts) ?? ""
+        if ends_with(ts, " UTC") {
+          iso = replace(replace(ts, " UTC", "Z"), " ", "T")
+          .timestamp = parse_timestamp(iso, format: "%+") ?? .timestamp
+        }
+      } else {
+        # Continuation / unparseable lines keep the raw message and source timestamp
+        .level = "info"
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_postgresql_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_postgresql_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

@@ -1,0 +1,128 @@
+# Mihari Vector Configuration - Traefik
+# Collects Traefik JSON access/application logs, built-in metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - access log: "METHOD /path STATUS" summary;
+#               application log: the "msg" field; raw line otherwise
+#   level     - access log: info (<400), warn (4xx), error (5xx);
+#               application log: the logrus level field
+#   timestamp - event time. Never renamed; overwritten from the entry's
+#               time / StartUTC field when parseable.
+#   service   - always "traefik"
+#   host      - machine hostname
+# Any other top-level key (http_method, http_path, http_status, client_ip,
+# router, backend_service, duration_ms, ...) is stored as a searchable string
+# attribute.
+#
+# Metrics: scrapes Traefik's built-in Prometheus endpoint on port 8080
+# (enable with: --metrics.prometheus=true; adjust the port if your
+# entryPoint differs).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_traefik_logs:
+    type: file
+    include:
+      - "/var/log/traefik/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_traefik_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:8080/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_traefik_parser:
+    type: remap
+    inputs: [mihari_traefik_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "traefik"
+      .host = get_hostname!()
+      parsed, err = parse_json(string(.message) ?? "")
+      parsed = object(parsed) ?? {}
+      if err == null && length(parsed) > 0 {
+        if parsed.DownstreamStatus != null {
+          # JSON access log
+          status = to_int(parsed.DownstreamStatus) ?? 0
+          .level = if status >= 500 { "error" } else if status >= 400 { "warn" } else { "info" }
+          method = string(parsed.RequestMethod) ?? ""
+          path = string(parsed.RequestPath) ?? ""
+          # DownstreamStatus is a JSON number — convert, don't type-assert.
+          status_s = to_string!(parsed.DownstreamStatus)
+          .http_method = method
+          .http_path = path
+          .http_status = status_s
+          .client_ip = string(parsed.ClientHost) ?? ""
+          .router = string(parsed.RouterName) ?? ""
+          .backend_service = string(parsed.ServiceName) ?? ""
+          dur_ns = to_float(parsed.Duration) ?? 0.0
+          .duration_ms = dur_ns / 1000000.0
+          .message = method + " " + path + " " + status_s
+        } else {
+          # JSON application log (logrus)
+          lvl = downcase(string(parsed.level) ?? "info")
+          if lvl == "warning" { lvl = "warn" }
+          .level = lvl
+          msg = string(parsed.msg) ?? (string(parsed.message) ?? "")
+          if msg != "" { .message = msg }
+        }
+        ts = string(parsed.time) ?? (string(parsed.StartUTC) ?? "")
+        if ts != "" { .timestamp = parse_timestamp(ts, format: "%+") ?? .timestamp }
+      } else {
+        # CLF access-log fallback
+        clf, cerr = parse_regex(string(.message) ?? "", r'^(?P<client>\S+) \S+ (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+)[^"]*" (?P<status>\d{3}) (?P<bytes>\d+|-)')
+        if cerr == null {
+          status = to_int(clf.status) ?? 0
+          .level = if status >= 500 { "error" } else if status >= 400 { "warn" } else { "info" }
+          .http_method = clf.method
+          .http_path = clf.path
+          .http_status = clf.status
+          .client_ip = clf.client
+          .timestamp = parse_timestamp(string(clf.ts) ?? "", format: "%d/%b/%Y:%H:%M:%S %z") ?? .timestamp
+        } else {
+          .level = "info"
+        }
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_traefik_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_traefik_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

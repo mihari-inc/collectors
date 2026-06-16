@@ -1,0 +1,31 @@
+# Mihari eBPF Collector — Docker Compose Deployment
+#
+# Runs Grafana Beyla in privileged mode to observe all network traffic
+# on the host via eBPF. Exports OTLP traces + metrics to Mihari.
+#
+# Usage:
+#   1. Replace __INGESTION_URL__ and __SOURCE_TOKEN__
+#   2. docker compose -f docker-compose.yaml up -d
+#
+# Variables:
+#   __INGESTION_URL__ — Your Mihari instance URL (e.g., https://platform.mihari.io)
+#   __SOURCE_TOKEN__  — Bearer token for authentication
+
+services:
+  mihari-ebpf:
+    image: ghcr.io/mihari-inc/ebpf-collector:latest
+    container_name: mihari-ebpf
+    restart: unless-stopped
+    privileged: true
+    pid: host
+    network_mode: host
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:rw
+      - /sys/kernel/tracing:/sys/kernel/tracing:rw
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      BEYLA_OTEL_EXPORTER_OTLP_ENDPOINT: __INGESTION_URL__
+      OTEL_EXPORTER_OTLP_HEADERS: "Authorization=Bearer __SOURCE_TOKEN__"
+      BEYLA_LOG_LEVEL: info
+    mem_limit: 512m

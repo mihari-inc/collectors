@@ -1,0 +1,68 @@
+# Vector unit tests for configs/apache.yaml (run via tests/run.sh)
+tests:
+  - name: apache combined access log 200 line
+    inputs:
+      - insert_at: mihari_apache_access_parser
+        type: log
+        log_fields:
+          message: '192.0.2.10 - alice [01/Jun/2026:10:00:00 +0000] "GET /index.html HTTP/1.1" 200 5120 "https://example.com/" "Mozilla/5.0 (X11; Linux x86_64)"'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_apache_access_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "apache")
+              assert_eq!(.level, "info")
+              assert_eq!(.http_method, "GET")
+              assert_eq!(.http_path, "/index.html")
+              assert_eq!(.http_status, "200")
+              assert_eq!(.client_ip, "192.0.2.10")
+              assert_eq!(.bytes_sent, "5120")
+              assert_eq!(.http_referer, "https://example.com/")
+              assert_eq!(.http_user_agent, "Mozilla/5.0 (X11; Linux x86_64)")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the access-log timestamp (with offset) must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T10:00:00")
+
+  - name: apache combined access log 404 line maps to warn
+    inputs:
+      - insert_at: mihari_apache_access_parser
+        type: log
+        log_fields:
+          message: '198.51.100.4 - - [01/Jun/2026:10:00:01 +0000] "GET /wp-login.php HTTP/1.1" 404 196 "-" "curl/8.5.0"'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_apache_access_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "apache")
+              assert_eq!(.level, "warn")
+              assert_eq!(.http_status, "404")
+              assert_eq!(.http_path, "/wp-login.php")
+              assert!(!exists(.http_referer), "referer '-' must be dropped")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T10:00:01")
+
+  - name: apache error log line
+    inputs:
+      - insert_at: mihari_apache_error_parser
+        type: log
+        log_fields:
+          message: "[Mon Jun 01 10:00:02.123456 2026] [proxy:error] [pid 1234:tid 140000000000000] [client 10.0.0.1:54321] AH01114: HTTP: failed to make connection to backend: 10.0.0.5"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_apache_error_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "apache")
+              assert_eq!(.level, "error")
+              assert_eq!(.module, "proxy")
+              assert_eq!(.pid, "1234")
+              assert_eq!(.client_ip, "10.0.0.1:54321")
+              assert_eq!(.message, "AH01114: HTTP: failed to make connection to backend: 10.0.0.5")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # error-log timestamp carries no offset, so .timestamp is preserved
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

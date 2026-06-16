@@ -1,0 +1,63 @@
+# Vector unit tests for configs/mysql.yaml (run via tests/run.sh)
+tests:
+  - name: mysql 8.x error log line
+    inputs:
+      - insert_at: mihari_mysql_parser
+        type: log
+        log_fields:
+          message: "2026-06-01T12:00:00.123456Z 8 [ERROR] [MY-013183] [InnoDB] Assertion failure: dict0dict.cc:1234 thread 140265963060992"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mysql_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mysql")
+              assert_eq!(.level, "error")
+              assert_eq!(.message, "Assertion failure: dict0dict.cc:1234 thread 140265963060992")
+              assert_eq!(.thread, "8")
+              assert_eq!(.error_code, "MY-013183")
+              assert_eq!(.subsystem, "InnoDB")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the in-line ISO timestamp must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.6f"), "2026-06-01T12:00:00.123456")
+
+  - name: mysql 8.x warning line
+    inputs:
+      - insert_at: mihari_mysql_parser
+        type: log
+        log_fields:
+          message: "2026-06-01T12:00:01.000000Z 0 [Warning] [MY-010918] [Server] 'default_authentication_plugin' is deprecated and will be removed in a future release."
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mysql_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mysql")
+              assert_eq!(.level, "warn")
+              assert_eq!(.message, "'default_authentication_plugin' is deprecated and will be removed in a future release.")
+              assert_eq!(.thread, "0")
+              assert_eq!(.error_code, "MY-010918")
+              assert_eq!(.subsystem, "Server")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:01")
+
+  - name: mysql slow-query header passes through unparsed
+    inputs:
+      - insert_at: mihari_mysql_parser
+        type: log
+        log_fields:
+          message: "# Query_time: 12.000423  Lock_time: 0.000123 Rows_sent: 1  Rows_examined: 4000000"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mysql_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mysql")
+              assert_eq!(.level, "info")
+              assert!(contains(to_string(.message) ?? "", "Query_time"), "raw message must be kept")
+              assert!(!exists(.thread), "thread must be absent")
+              # .timestamp must be preserved untouched (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

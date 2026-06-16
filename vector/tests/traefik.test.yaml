@@ -1,0 +1,68 @@
+# Vector unit tests for configs/traefik.yaml (run via tests/run.sh)
+tests:
+  - name: traefik JSON access log 502 line
+    inputs:
+      - insert_at: mihari_traefik_parser
+        type: log
+        log_fields:
+          message: '{"ClientHost":"203.0.113.5","DownstreamStatus":502,"Duration":250000000,"RequestMethod":"GET","RequestPath":"/api/orders","RouterName":"web@docker","ServiceName":"shop@docker","StartUTC":"2026-06-01T12:00:00.123Z","time":"2026-06-01T12:00:00.123Z"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_traefik_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "traefik")
+              assert_eq!(.level, "error")
+              assert_eq!(.message, "GET /api/orders 502")
+              assert_eq!(.http_method, "GET")
+              assert_eq!(.http_path, "/api/orders")
+              assert_eq!(.http_status, "502")
+              assert_eq!(.client_ip, "203.0.113.5")
+              assert_eq!(.router, "web@docker")
+              assert_eq!(.backend_service, "shop@docker")
+              # Duration is nanoseconds: 250000000 ns == 250.0 ms
+              assert_eq!(.duration_ms, 250.0)
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the entry's time field must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.3f"), "2026-06-01T12:00:00.123")
+
+  - name: traefik JSON application log warning
+    inputs:
+      - insert_at: mihari_traefik_parser
+        type: log
+        log_fields:
+          message: '{"level":"warning","msg":"Cannot retrieve certificate for domain example.com","time":"2026-06-01T12:00:01Z"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_traefik_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "traefik")
+              assert_eq!(.level, "warn")
+              assert_eq!(.message, "Cannot retrieve certificate for domain example.com")
+              assert!(!exists(.http_status), "http_status must be absent on application logs")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:01")
+
+  - name: traefik CLF access log fallback
+    inputs:
+      - insert_at: mihari_traefik_parser
+        type: log
+        log_fields:
+          message: '192.0.2.10 - - [01/Jun/2026:12:00:02 +0000] "GET /dashboard HTTP/1.1" 200 1234 "-" "Mozilla/5.0" 87 "web@internal" "-" 3ms'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_traefik_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "traefik")
+              assert_eq!(.level, "info")
+              assert_eq!(.http_method, "GET")
+              assert_eq!(.http_path, "/dashboard")
+              assert_eq!(.http_status, "200")
+              assert_eq!(.client_ip, "192.0.2.10")
+              # the CLF timestamp (with offset) must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:02")
+              assert!(!exists(.dt), "dt must not exist")

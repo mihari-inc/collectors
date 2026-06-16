@@ -1,0 +1,123 @@
+# Mihari Vector Configuration - Elasticsearch
+# Collects Elasticsearch server logs (JSON, 7+), exporter metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the "message" field of the JSON log entry (or the raw line
+#               for the plaintext fallback)
+#   level     - the Elasticsearch level, normalised
+#   timestamp - event time. Never renamed; overwritten from the entry's
+#               timestamp / @timestamp when parseable.
+#   service   - always "elasticsearch"
+#   host      - machine hostname
+# Any other top-level key (component, cluster, es_node, ...) is stored as a
+# searchable string attribute.
+#
+# Noisy siblings (deprecation, slowlog, audit, gc) are excluded - add them
+# back to "include" if you need them.
+#
+# Metrics: scrapes elasticsearch_exporter on its default port 9114
+# (https://github.com/prometheus-community/elasticsearch_exporter).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_elasticsearch_logs:
+    type: file
+    include:
+      - "/var/log/elasticsearch/*.log"
+      - "/var/log/elasticsearch/*_server.json"
+    exclude:
+      - "/var/log/elasticsearch/*_deprecation*"
+      - "/var/log/elasticsearch/*_slowlog*"
+      - "/var/log/elasticsearch/*_audit*"
+      - "/var/log/elasticsearch/gc.log*"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_elasticsearch_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9114/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_elasticsearch_parser:
+    type: remap
+    inputs: [mihari_elasticsearch_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "elasticsearch"
+      .host = get_hostname!()
+      # ES 7 JSON: {"type":"server","timestamp":"...","level":"INFO","component":"...","cluster.name":"...","node.name":"...","message":"..."}
+      # ES 8 ECS:  {"@timestamp":"...","log.level":"INFO","log.logger":"...","elasticsearch.cluster.name":"...","elasticsearch.node.name":"...","message":"..."}
+      parsed, err = parse_json(string(.message) ?? "")
+      parsed = object(parsed) ?? {}
+      if err == null && length(parsed) > 0 {
+        lvl = downcase(string(parsed.level) ?? (string(get(parsed, ["log.level"]) ?? null) ?? "info"))
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "critical" { lvl = "error" }
+        if lvl == "deprecation" { lvl = "warn" }
+        .level = lvl
+        msg = string(parsed.message) ?? ""
+        if msg != "" { .message = msg }
+        comp = string(parsed.component) ?? (string(get(parsed, ["log.logger"]) ?? null) ?? "")
+        if comp != "" { .component = comp }
+        cluster = string(get(parsed, ["cluster.name"]) ?? null) ?? (string(get(parsed, ["elasticsearch.cluster.name"]) ?? null) ?? "")
+        if cluster != "" { .cluster = cluster }
+        node = string(get(parsed, ["node.name"]) ?? null) ?? (string(get(parsed, ["elasticsearch.node.name"]) ?? null) ?? "")
+        if node != "" { .es_node = node }
+        ts = string(parsed.timestamp) ?? (string(get(parsed, ["@timestamp"]) ?? null) ?? "")
+        if ts != "" { .timestamp = parse_timestamp(replace(ts, ",", "."), format: "%+") ?? .timestamp }
+      } else {
+        # Plaintext fallback: [2026-06-11T08:00:00,123][INFO ][o.e.n.Node] [node-1] message
+        plain, perr = parse_regex(string(.message) ?? "", r'^\[(?P<ts>[^\]]+)\]\[(?P<level>\w+)\s*\]\[(?P<component>[^\]]+?)\s*\](?: \[(?P<node>[^\]]+)\])? (?P<msg>.*)')
+        if perr == null {
+          lvl = downcase(string(plain.level) ?? "info")
+          if lvl == "warning" { lvl = "warn" }
+          .level = lvl
+          .component = plain.component
+          if plain.node != null { .es_node = plain.node }
+          .message = string(plain.msg) ?? .message
+        } else {
+          .level = "info"
+        }
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_elasticsearch_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_elasticsearch_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

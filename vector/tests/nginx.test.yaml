@@ -1,0 +1,71 @@
+# Vector unit tests for configs/nginx.yaml (run via tests/run.sh)
+tests:
+  - name: nginx access log 200 line
+    inputs:
+      - insert_at: mihari_nginx_access_parser
+        type: log
+        log_fields:
+          message: '192.0.2.1 - - [01/Jun/2026:12:00:00 +0000] "GET /health HTTP/1.1" 200 612 "-" "kube-probe/1.30"'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_nginx_access_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "nginx")
+              assert_eq!(.level, "info")
+              assert_eq!(.http_method, "GET")
+              assert_eq!(.http_path, "/health")
+              assert_eq!(.http_status, "200")
+              assert_eq!(.client_ip, "192.0.2.1")
+              assert_eq!(.bytes_sent, "612")
+              assert!(!exists(.http_referer), "referer '-' must be dropped")
+              assert_eq!(.http_user_agent, "kube-probe/1.30")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the access-log timestamp (with offset) must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:00")
+
+  - name: nginx access log 500 line
+    inputs:
+      - insert_at: mihari_nginx_access_parser
+        type: log
+        log_fields:
+          message: '203.0.113.9 - alice [01/Jun/2026:12:00:01 +0000] "POST /api/orders HTTP/1.1" 500 150 "https://shop.example.com/cart" "Mozilla/5.0"'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_nginx_access_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "nginx")
+              assert_eq!(.level, "error")
+              assert_eq!(.http_method, "POST")
+              assert_eq!(.http_path, "/api/orders")
+              assert_eq!(.http_status, "500")
+              assert_eq!(.client_ip, "203.0.113.9")
+              assert_eq!(.bytes_sent, "150")
+              assert_eq!(.http_referer, "https://shop.example.com/cart")
+              assert_eq!(.http_user_agent, "Mozilla/5.0")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:01")
+
+  - name: nginx error log line
+    inputs:
+      - insert_at: mihari_nginx_error_parser
+        type: log
+        log_fields:
+          message: "2026/06/01 12:00:02 [error] 1234#5678: *91 connect() failed (111: Connection refused) while connecting to upstream"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_nginx_error_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "nginx")
+              assert_eq!(.level, "error")
+              assert_eq!(.pid, "1234")
+              assert_eq!(.connection_id, "91")
+              assert_eq!(.message, "connect() failed (111: Connection refused) while connecting to upstream")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # error-log timestamp carries no offset, so .timestamp is preserved
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

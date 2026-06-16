@@ -1,0 +1,77 @@
+{{- if eq .Values.deploymentMode "deployment" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mihari-collector.fullname" . }}
+  labels:
+    {{- include "mihari-collector.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mihari-collector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "mihari-collector.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "mihari-collector.serviceAccountName" . }}
+      containers:
+        - name: collector
+          image: {{ include "mihari-collector.image" . }}
+          imagePullPolicy: {{ include "mihari-collector.imagePullPolicy" . }}
+          {{- if eq .Values.collector "vector" }}
+          args: ["--config", "/etc/vector/vector.yaml"]
+          {{- else }}
+          args: ["--config", "/etc/otelcol-contrib/config.yaml"]
+          {{- end }}
+          env:
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- if eq .Values.collector "otel" }}
+            - name: otlp-grpc
+              containerPort: {{ .Values.otel.grpcPort }}
+            - name: otlp-http
+              containerPort: {{ .Values.otel.httpPort }}
+            - name: health
+              containerPort: {{ .Values.otel.healthCheckPort }}
+            {{- else }}
+            - name: api
+              containerPort: 8686
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if eq .Values.collector "vector" }}
+            - name: config
+              mountPath: /etc/vector/vector.yaml
+              subPath: vector.yaml
+              readOnly: true
+            {{- else }}
+            - name: config
+              mountPath: /etc/otelcol-contrib/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "mihari-collector.fullname" . }}-config
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- end }}

@@ -1,0 +1,115 @@
+# Mihari Vector Configuration - MongoDB
+# Collects MongoDB structured JSON logs (4.4+), exporter metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the "msg" field of the structured log entry
+#   level     - mapped from MongoDB severity: F=fatal, E=error, W=warn,
+#               I=info, D1-D5=debug
+#   timestamp - event time. Never renamed; overwritten from the entry's
+#               "t" / "date" ISO timestamp when parseable.
+#   service   - always "mongodb"
+#   host      - machine hostname
+# Any other top-level key (component, context, mongo_id, attr, ...) is stored
+# as a searchable string attribute.
+#
+# Metrics: scrapes mongodb_exporter on its default port 9216
+# (https://github.com/percona/mongodb_exporter).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_mongodb_logs:
+    type: file
+    include:
+      - "/var/log/mongodb/mongod.log"
+      - "/var/log/mongodb/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_mongodb_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9216/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_mongodb_parser:
+    type: remap
+    inputs: [mihari_mongodb_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "mongodb"
+      .host = get_hostname!()
+      # MongoDB 4.4+ structured logging ($$ is Vector's escape for a literal $):
+      # {"t":{"$$date":"..."},"s":"E","c":"STORAGE","id":22435,"ctx":"...","msg":"...","attr":{...}}
+      parsed, err = parse_json(string(.message) ?? "")
+      parsed = object(parsed) ?? {}
+      if err == null && length(parsed) > 0 {
+        sev = string(parsed.s) ?? "I"
+        lvl = "info"
+        if sev == "F" { lvl = "fatal" }
+        if sev == "E" { lvl = "error" }
+        if sev == "W" { lvl = "warn" }
+        if starts_with(sev, "D") { lvl = "debug" }
+        .level = lvl
+        .message = string(parsed.msg) ?? .message
+        comp = string(parsed.c) ?? ""
+        if comp != "" { .component = comp }
+        ctx = string(parsed.ctx) ?? ""
+        if ctx != "" { .context = ctx }
+        if parsed.id != null { .mongo_id = to_string!(parsed.id) }
+        if parsed.attr != null { .attr = encode_json(object(parsed.attr) ?? {}) }
+        ts = string(get(parsed, ["t", "$$date"]) ?? null) ?? ""
+        if ts != "" { .timestamp = parse_timestamp(ts, format: "%+") ?? .timestamp }
+      } else {
+        # Pre-4.4 plaintext lines pass through with a keyword-sniffed level
+        lvl = "info"
+        level_parsed, level_err = parse_regex(string(.message) ?? "", r'\s(?P<level>[FEWID]) [A-Z]+\s')
+        if level_err == null {
+          sev = string(level_parsed.level) ?? "I"
+          if sev == "F" { lvl = "fatal" }
+          if sev == "E" { lvl = "error" }
+          if sev == "W" { lvl = "warn" }
+          if sev == "D" { lvl = "debug" }
+        }
+        .level = lvl
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_mongodb_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_mongodb_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

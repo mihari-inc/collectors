@@ -1,0 +1,84 @@
+# Vector unit tests for configs/mongodb.yaml (run via tests/run.sh)
+#
+# NOTE: "$$date" below is Vector's escape for the literal dollar-date key in
+# MongoDB's JSON log format - test files go through the same env-var
+# interpolation as configs, so a single dollar would be interpolated.
+tests:
+  - name: mongodb structured JSON error (severity E)
+    inputs:
+      - insert_at: mihari_mongodb_parser
+        type: log
+        log_fields:
+          message: '{"t":{"$$date":"2026-06-01T12:00:00.123+00:00"},"s":"E","c":"STORAGE","id":22435,"ctx":"initandlisten","msg":"WiredTiger error","attr":{"error":95,"message":"Operation not supported"}}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mongodb_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mongodb")
+              assert_eq!(.level, "error")
+              assert_eq!(.message, "WiredTiger error")
+              assert_eq!(.component, "STORAGE")
+              assert_eq!(.context, "initandlisten")
+              assert_eq!(.mongo_id, "22435")
+              assert!(contains(to_string(.attr) ?? "", "Operation not supported"), "attr must be JSON-encoded")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the entry's "t" date field must be promoted to .timestamp
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S%.3f"), "2026-06-01T12:00:00.123")
+
+  - name: mongodb structured JSON warning (severity W)
+    inputs:
+      - insert_at: mihari_mongodb_parser
+        type: log
+        log_fields:
+          message: '{"t":{"$$date":"2026-06-01T12:00:01.000+00:00"},"s":"W","c":"CONTROL","id":22120,"ctx":"initandlisten","msg":"Access control is not enabled for the database"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mongodb_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mongodb")
+              assert_eq!(.level, "warn")
+              assert_eq!(.message, "Access control is not enabled for the database")
+              assert_eq!(.component, "CONTROL")
+              assert!(!exists(.attr), "attr must be absent when the entry has none")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:01")
+
+  - name: mongodb structured JSON debug (severity D2)
+    inputs:
+      - insert_at: mihari_mongodb_parser
+        type: log
+        log_fields:
+          message: '{"t":{"$$date":"2026-06-01T12:00:02.000+00:00"},"s":"D2","c":"COMMAND","id":21965,"ctx":"conn42","msg":"About to run the command"}'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mongodb_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mongodb")
+              assert_eq!(.level, "debug")
+              assert_eq!(.message, "About to run the command")
+              assert_eq!(.context, "conn42")
+              assert_eq!(format_timestamp!(.timestamp, format: "%Y-%m-%dT%H:%M:%S"), "2026-06-01T12:00:02")
+
+  - name: mongodb pre-4.4 plaintext line keeps message and timestamp
+    inputs:
+      - insert_at: mihari_mongodb_parser
+        type: log
+        log_fields:
+          message: "2026-06-01T12:00:03.000+0000 E STORAGE  [initandlisten] Failed to set up listener: SocketException: Address already in use"
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_mongodb_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "mongodb")
+              assert_eq!(.level, "error")
+              assert!(contains(to_string(.message) ?? "", "Address already in use"), "raw message must be kept")
+              # plaintext fallback never touches .timestamp (never renamed to .dt)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")

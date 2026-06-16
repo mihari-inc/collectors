@@ -1,0 +1,74 @@
+# Vector unit tests for configs/haproxy.yaml (run via tests/run.sh)
+tests:
+  - name: haproxy HTTP log 503 line
+    inputs:
+      - insert_at: mihari_haproxy_parser
+        type: log
+        log_fields:
+          message: '10.0.0.1:54321 [01/Jun/2026:12:00:00.123] fe_main be_app/srv1 0/0/1/-1/3 503 1234 - - SH-- 10/10/0/0/0 0/0 "GET /api/health HTTP/1.1"'
+          timestamp: "2026-06-11T07:00:00Z"
+    outputs:
+      - extract_from: mihari_haproxy_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "haproxy")
+              assert_eq!(.level, "error")
+              assert_eq!(.http_status, "503")
+              assert_eq!(.frontend, "fe_main")
+              assert_eq!(.backend, "be_app")
+              assert_eq!(.backend_server, "srv1")
+              assert_eq!(.client_ip, "10.0.0.1")
+              assert_eq!(.duration_ms, "3")
+              assert_eq!(.termination_state, "SH--")
+              assert_eq!(.http_method, "GET")
+              assert_eq!(.http_path, "/api/health")
+              assert!(is_string(.host) && .host != "", "host must be set")
+              # the raw line stays intact in .message (the parser is not lossless)
+              assert!(contains(to_string(.message) ?? "", "be_app/srv1"), "raw line must be kept")
+              # accept-date carries no offset, so .timestamp is preserved (never renamed)
+              assert_eq!(.timestamp, "2026-06-11T07:00:00Z")
+              assert!(!exists(.dt), "dt must not exist")
+
+  - name: haproxy HTTP log 200 line behind a syslog prefix
+    inputs:
+      - insert_at: mihari_haproxy_parser
+        type: log
+        log_fields:
+          message: 'Jun  1 12:00:01 lb1 haproxy[123]: 192.0.2.7:40312 [01/Jun/2026:12:00:01.456] fe_main be_app/srv2 0/0/0/2/2 200 5120 - - ---- 8/8/0/0/0 0/0 "POST /api/orders HTTP/1.1"'
+          timestamp: "2026-06-11T07:00:01Z"
+    outputs:
+      - extract_from: mihari_haproxy_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "haproxy")
+              assert_eq!(.level, "info")
+              assert_eq!(.http_status, "200")
+              assert_eq!(.frontend, "fe_main")
+              assert_eq!(.backend, "be_app")
+              assert_eq!(.backend_server, "srv2")
+              assert_eq!(.client_ip, "192.0.2.7")
+              assert_eq!(.duration_ms, "2")
+              assert_eq!(.http_method, "POST")
+              assert_eq!(.http_path, "/api/orders")
+              assert_eq!(.timestamp, "2026-06-11T07:00:01Z")
+
+  - name: haproxy startup line passes through unparsed
+    inputs:
+      - insert_at: mihari_haproxy_parser
+        type: log
+        log_fields:
+          message: "[NOTICE]   (1) : New worker (8) forked"
+          timestamp: "2026-06-11T07:00:02Z"
+    outputs:
+      - extract_from: mihari_haproxy_parser
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.service, "haproxy")
+              assert_eq!(.level, "info")
+              assert!(contains(to_string(.message) ?? "", "New worker"), "raw message must be kept")
+              assert!(!exists(.http_status), "http_status must be absent")
+              assert_eq!(.timestamp, "2026-06-11T07:00:02Z")
+              assert!(!exists(.dt), "dt must not exist")

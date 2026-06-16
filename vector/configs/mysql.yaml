@@ -1,0 +1,95 @@
+# Mihari Vector Configuration - MySQL
+# Collects MySQL error/slow query logs and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the log body (prefix stripped when the line matches the
+#               MySQL 8.x error log format)
+#   level     - trace|debug|info|warn|error|fatal
+#   timestamp - event time. Never renamed; overwritten from the log line when
+#               it carries an ISO 8601 timestamp (MySQL 8.x default).
+#   service   - always "mysql"
+#   host      - machine hostname
+# Any other top-level key (thread, error_code, subsystem, ...) is stored as a
+# searchable string attribute.
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_mysql_logs:
+    type: file
+    include:
+      - "/var/log/mysql/*.log"
+      - "/var/log/mysql/error.log"
+      - "/var/log/mysql/slow-query.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_mysql_metrics:
+    type: prometheus_scrape
+    endpoints:
+      - "http://127.0.0.1:9104/metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_mysql_parser:
+    type: remap
+    inputs: [mihari_mysql_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "mysql"
+      .host = get_hostname!()
+      # MySQL 8.x error log: <ISO ts> <thread id> [Level] [MY-xxxxxx] [Subsystem] msg
+      parsed, err = parse_regex(.message, r'^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+(?:Z|[+-]\d{2}:\d{2})) (?P<thread>\d+) \[(?P<level>\w+)\] (?:\[(?P<code>[A-Za-z0-9-]+)\] \[(?P<subsystem>\w+)\] )?(?P<msg>.*)')
+      if err == null {
+        lvl = downcase(string(parsed.level) ?? "info")
+        if lvl == "note" || lvl == "system" { lvl = "info" }
+        if lvl == "warning" { lvl = "warn" }
+        .level = lvl
+        .message = string(parsed.msg) ?? .message
+        .thread = parsed.thread
+        if parsed.code != null { .error_code = parsed.code }
+        if parsed.subsystem != null { .subsystem = parsed.subsystem }
+        .timestamp = parse_timestamp(string(parsed.ts) ?? "", format: "%+") ?? .timestamp
+      } else {
+        # Slow-query log entries and continuation lines pass through unparsed
+        .level = "info"
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_mysql_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_mysql_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5

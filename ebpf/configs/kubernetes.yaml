@@ -1,0 +1,101 @@
+# Mihari eBPF Collector — Kubernetes DaemonSet
+#
+# Variables:
+#   __INGESTION_URL__ — Your Mihari instance URL
+#   __SOURCE_TOKEN__  — Bearer token for authentication
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: mihari-ebpf
+  namespace: mihari
+  labels:
+    app: mihari-ebpf
+spec:
+  selector:
+    matchLabels:
+      app: mihari-ebpf
+  template:
+    metadata:
+      labels:
+        app: mihari-ebpf
+    spec:
+      hostPID: true
+      hostNetwork: true
+      serviceAccountName: mihari-ebpf
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+      containers:
+        - name: beyla
+          image: ghcr.io/mihari-inc/ebpf-collector:latest
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          env:
+            - name: BEYLA_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "__INGESTION_URL__"
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              value: "Authorization=Bearer __SOURCE_TOKEN__"
+            - name: BEYLA_KUBE_METADATA_ENABLE
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: sys-kernel-debug
+              mountPath: /sys/kernel/debug
+            - name: sys-kernel-tracing
+              mountPath: /sys/kernel/tracing
+            - name: sys-fs-cgroup
+              mountPath: /sys/fs/cgroup
+              readOnly: true
+          ports:
+            - name: metrics
+              containerPort: 6060
+              protocol: TCP
+      volumes:
+        - name: sys-kernel-debug
+          hostPath:
+            path: /sys/kernel/debug
+        - name: sys-kernel-tracing
+          hostPath:
+            path: /sys/kernel/tracing
+        - name: sys-fs-cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mihari-ebpf
+  namespace: mihari
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mihari-ebpf
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mihari-ebpf
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mihari-ebpf
+subjects:
+  - kind: ServiceAccount
+    name: mihari-ebpf
+    namespace: mihari

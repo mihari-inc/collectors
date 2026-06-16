@@ -1,0 +1,101 @@
+# Mihari Vector Configuration - RabbitMQ
+# Collects RabbitMQ logs, built-in Prometheus metrics and host metrics
+#
+# Variables (replaced by setup script):
+#   __INGESTION_URL__ - Your Mihari instance URL
+#   __SOURCE_TOKEN__  - Bearer token for authentication
+#
+# Log event contract (top-level fields read by the Mihari ingest parser):
+#   message   - the log body (timestamp/level/pid prefix stripped)
+#   level     - the RabbitMQ severity word, normalised to
+#               trace|debug|info|warn|error|fatal
+#   timestamp - event time. Never renamed; overwritten from the log line when
+#               it carries a UTC offset (RabbitMQ 3.x default format).
+#   service   - always "rabbitmq"
+#   host      - machine hostname
+# Any other top-level key (erlang_pid, ...) is stored as a searchable string
+# attribute.
+#
+# Metrics: scrapes the rabbitmq_prometheus plugin on its default port 15692
+# (enable with: rabbitmq-plugins enable rabbitmq_prometheus).
+
+api:
+  enabled: true
+  address: "127.0.0.1:8686"
+
+sources:
+  mihari_rabbitmq_logs:
+    type: file
+    include:
+      - "/var/log/rabbitmq/*.log"
+    read_from: beginning
+    ignore_older_secs: 600
+
+  mihari_rabbitmq_metrics:
+    type: prometheus_scrape
+    endpoints:
+      # /metrics is aggregated (no per-queue labels); /metrics/detailed adds
+      # rabbitmq_detailed_queue_messages{queue=...} without any server config.
+      - "http://127.0.0.1:15692/metrics"
+      - "http://127.0.0.1:15692/metrics/detailed?family=queue_coarse_metrics"
+    scrape_interval_secs: 30
+
+  mihari_host_metrics:
+    type: host_metrics
+    collectors: [cpu, disk, filesystem, load, host, memory, network]
+    scrape_interval_secs: 30
+
+transforms:
+  mihari_rabbitmq_parser:
+    type: remap
+    inputs: [mihari_rabbitmq_logs]
+    source: |
+      del(.source_type)
+      del(.file)
+      .service = "rabbitmq"
+      .host = get_hostname!()
+      # Default format: 2024-01-01 12:00:00.000000+00:00 [info] <0.123.0> message
+      parsed, err = parse_regex(.message, r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+(?:[+-]\d{2}:\d{2})?) \[(?P<level>\w+)\] <(?P<pid>[^>]+)> (?P<msg>.*)')
+      if err == null {
+        lvl = downcase(string(parsed.level) ?? "info")
+        if lvl == "warning" { lvl = "warn" }
+        if lvl == "notice" { lvl = "info" }
+        if lvl == "critical" || lvl == "alert" { lvl = "error" }
+        if lvl == "emergency" { lvl = "fatal" }
+        .level = lvl
+        .erlang_pid = parsed.pid
+        .message = string(parsed.msg) ?? .message
+        # Promote the in-line timestamp when it carries a UTC offset
+        ts = string(parsed.ts) ?? ""
+        .timestamp = parse_timestamp(replace(ts, " ", "T"), format: "%+") ?? .timestamp
+      } else {
+        # Erlang crash reports / continuation lines pass through unparsed
+        .level = "info"
+      }
+
+sinks:
+  mihari_logs_sink:
+    type: http
+    inputs: [mihari_rabbitmq_parser]
+    uri: "__INGESTION_URL__/v1/ingest/vector"
+    method: post
+    encoding:
+      codec: json
+    compression: gzip
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 1
+
+  mihari_metrics_sink:
+    type: prometheus_remote_write
+    inputs: [mihari_rabbitmq_metrics, mihari_host_metrics]
+    endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
+    auth:
+      strategy: bearer
+      token: "__SOURCE_TOKEN__"
+    batch:
+      max_bytes: 1048576
+      timeout_secs: 5
