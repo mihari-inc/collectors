@@ -108,6 +108,8 @@ transforms:
 sinks:
   mihari_logs_sink:
     type: http
+    healthcheck:
+      enabled: false
     inputs: [mihari_apache_access_parser, mihari_apache_error_parser]
     uri: "__INGESTION_URL__/v1/ingest/vector"
     method: post
@@ -123,6 +125,8 @@ sinks:
 
   mihari_metrics_sink:
     type: prometheus_remote_write
+    healthcheck:
+      enabled: false
     inputs: [mihari_apache_metrics, mihari_host_metrics]
     endpoint: "__INGESTION_URL__/v1/ingest/prometheus"
     auth:
